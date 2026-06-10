@@ -1,0 +1,33 @@
+# IAR / Ninja caches
+.cyt4bb7*
+.ninja_deps
+.ninja_log
+build.ninja
+
+# IAR build outputs
+**/Debug_m7_0/Obj/
+**/Debug_m7_1/Obj/
+**/Debug_m7_0/BrowseInfo/
+**/Debug_m7_1/BrowseInfo/
+**/Debug_m7_0/List/
+**/Debug_m7_1/List/
+**/Exe/*.sim
+**/Exe/*.hex
+**/Exe/*.out
+
+# Local settings
+**/settings/*.dnx
+**/settings/*.dbgdt
+**/settings/*.crun
+**/*.cspy.bat
+**/*.cspy.ps1
+**/*.driver.xcl
+**/*.general.xcl
+**/*.wsdt
+
+# Temporary files
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db
