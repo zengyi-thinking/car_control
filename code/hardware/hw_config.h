@@ -21,8 +21,8 @@
 #define HW_MAX_YAW_RATE_RADPS                 2.4f
 #define HW_MAX_WHEEL_SPEED_MPS                1.9f
 
-#define HW_MANUAL_MAX_DUTY                    2000
-#define HW_MANUAL_MAX_LINEAR_SPEED_MPS        0.35f
+#define HW_MANUAL_MAX_DUTY                    6000
+#define HW_MANUAL_MAX_LINEAR_SPEED_MPS        0.80f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
@@ -30,12 +30,8 @@
 #define HW_WHEEL_TUNE_KI_STEP                 5.0f
 #define HW_WHEEL_TUNE_KD_STEP                 0.05f
 
-// Temporary bring-up switch:
-// 1 = manual mode bypasses wheel PID and drives motors in open loop.
-// 0 = manual mode uses wheel PID closed loop.
-#define HW_MANUAL_OPEN_LOOP_TEST              1
-
-#define HW_MOTOR_FF_KS_DUTY                   250.0f
+/* 轻量静摩擦补偿，避免低速纯 PID 起步太软 */
+#define HW_MOTOR_FF_KS_DUTY                   220.0f
 #define HW_MOTOR_FF_KV_DUTY_PER_MPS           1200.0f
 
 #endif

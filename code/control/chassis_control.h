@@ -2,6 +2,7 @@
 #define CHASSIS_CONTROL_H
 
 #include "hardware/sensors/hw_imu.h"
+#include "control/pid.h"
 #include "protocol/proto_nav.h"
 #include "protocol/proto_remote.h"
 #include "zf_common_typedef.h"
@@ -81,6 +82,7 @@ extern volatile uint8 g_chassis_wheel_pid_tune_enabled;
 extern volatile uint8 g_chassis_wheel_pid_tune_wheel;
 extern volatile uint8 g_chassis_wheel_pid_tune_param;
 extern volatile float g_chassis_wheel_pid_tune_target_mps;
+extern pid_t g_wheel_pid[4];
 
 void chassis_control_init(void);
 void chassis_control_reset(void);

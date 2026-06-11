@@ -49,11 +49,32 @@
 #define CHASSIS_MANUAL_HEADING_I_LIMIT      0.18f
 #define CHASSIS_MANUAL_HEADING_MAX_RADPS    0.35f
 
-#define CHASSIS_WHEEL_PID_KP                650.0f
-#define CHASSIS_WHEEL_PID_KI                160.0f
-#define CHASSIS_WHEEL_PID_KD                0.0f
-#define CHASSIS_WHEEL_PID_I_MAX             600.0f
-#define CHASSIS_WHEEL_PID_OUT_MAX           1000.0f
+#define CHASSIS_WHEEL_PID_OUT_MAX           3000.0f
+#define CHASSIS_WHEEL_PID_I_MAX             800.0f
+
+static const float s_wheel_pid_kp[4] =
+{
+    650.0f,   /* LF */
+    720.0f,   /* RF: 右前起步稍强 */
+    650.0f,   /* LB */
+    720.0f,   /* RB: 右后起步稍强 */
+};
+
+static const float s_wheel_pid_ki[4] =
+{
+    160.0f,   /* LF */
+    180.0f,   /* RF */
+    160.0f,   /* LB */
+    180.0f,   /* RB */
+};
+
+static const float s_wheel_pid_kd[4] =
+{
+    0.0f,
+    0.0f,
+    0.0f,
+    0.0f,
+};
 
 #define CHASSIS_TUNE_AXIS_ON                0.55f
 #define CHASSIS_TUNE_AXIS_OFF               0.25f
@@ -62,6 +83,14 @@ volatile uint8 g_chassis_wheel_pid_tune_enabled = 0U;
 volatile uint8 g_chassis_wheel_pid_tune_wheel = 0U;
 volatile uint8 g_chassis_wheel_pid_tune_param = 0U;
 volatile float g_chassis_wheel_pid_tune_target_mps = HW_WHEEL_TUNE_TARGET_MPS;
+
+static const float s_wheel_ff_ks_duty[4] =
+{
+    260.0f,   /* LF */
+    400.0f,   /* RF: 右侧补一点静摩擦 */
+    250.0f,   /* LB */
+    420.0f,   /* RB */
+};
 
 typedef struct
 {
@@ -82,7 +111,7 @@ typedef struct
 
 static chassis_runtime_t g_runtime;
 static chassis_status_t g_status;
-static pid_t g_wheel_pid[4];
+pid_t g_wheel_pid[4];
 
 static float chassis_clamp(float value, float min_value, float max_value)
 {
@@ -143,6 +172,22 @@ static void chassis_tune_adjust_selected_pid(float delta)
         default:
             break;
     }
+}
+
+static float chassis_feedforward_duty(uint8 wheel, float target_speed_mps)
+{
+    float abs_speed;
+    float duty;
+
+    if (fabsf(target_speed_mps) < 0.001f)
+    {
+        return 0.0f;
+    }
+
+    abs_speed = fabsf(target_speed_mps);
+    duty = s_wheel_ff_ks_duty[wheel] + (HW_MOTOR_FF_KV_DUTY_PER_MPS * abs_speed);
+
+    return (target_speed_mps > 0.0f) ? duty : -duty;
 }
 
 static void chassis_tune_apply_remote_input(float left_x, float left_y, float right_y)
@@ -279,37 +324,6 @@ static void chassis_reset_heading_controller(float yaw_deg)
     g_runtime.yaw_lock_deg = yaw_deg;
     g_runtime.yaw_lock_valid = 1U;
     g_runtime.heading_integral = 0.0f;
-}
-
-static float chassis_feedforward_duty(float target_speed_mps)
-{
-    if (target_speed_mps > 0.001f)
-    {
-        return HW_MOTOR_FF_KS_DUTY + (HW_MOTOR_FF_KV_DUTY_PER_MPS * target_speed_mps);
-    }
-    if (target_speed_mps < -0.001f)
-    {
-        return -HW_MOTOR_FF_KS_DUTY + (HW_MOTOR_FF_KV_DUTY_PER_MPS * target_speed_mps);
-    }
-    return 0.0f;
-}
-
-static float chassis_manual_open_loop_duty(float target_speed_mps)
-{
-    float abs_speed;
-    float duty;
-
-    if (fabsf(target_speed_mps) < 0.001f)
-    {
-        return 0.0f;
-    }
-
-    abs_speed = fabsf(target_speed_mps);
-    duty = HW_MOTOR_FF_KS_DUTY
-         + ((float)(HW_MANUAL_MAX_DUTY - (int)HW_MOTOR_FF_KS_DUTY)
-            * chassis_clamp(abs_speed / HW_MANUAL_MAX_LINEAR_SPEED_MPS, 0.0f, 1.0f));
-
-    return (target_speed_mps > 0.0f) ? duty : -duty;
 }
 
 static void chassis_manual_snap_axes(float *joy_x, float *joy_y)
@@ -500,9 +514,9 @@ void chassis_control_init(void)
     for (uint8 i = 0; i < 4U; ++i)
     {
         pid_init(&g_wheel_pid[i],
-                 CHASSIS_WHEEL_PID_KP,
-                 CHASSIS_WHEEL_PID_KI,
-                 CHASSIS_WHEEL_PID_KD,
+                 s_wheel_pid_kp[i],
+                 s_wheel_pid_ki[i],
+                 s_wheel_pid_kd[i],
                  CHASSIS_WHEEL_PID_OUT_MAX,
                  CHASSIS_WHEEL_PID_I_MAX);
     }
@@ -735,17 +749,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                     }
                     else
                     {
-                        if (HW_MANUAL_OPEN_LOOP_TEST)
-                        {
-                            // During open-loop bring-up, disable automatic yaw trim so
-                            // left-stick strafe tests reflect pure mecanum kinematics.
-                            omega_cmd = 0.0f;
-                            chassis_reset_heading_controller(yaw_deg);
-                        }
-                        else
-                        {
-                            omega_cmd = chassis_manual_heading_hold(yaw_deg, gyro_z_radps, dt_s);
-                        }
+                        omega_cmd = chassis_manual_heading_hold(yaw_deg, gyro_z_radps, dt_s);
                     }
                 }
                 else
@@ -859,31 +863,19 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
 
         for (uint8 i = 0; i < 4U; ++i)
         {
+            float duty_limit;
+            float duty_raw;
+            float duty_ff;
+
             g_status.wheel_target_mps[i] = wheel_target_mps[i];
 
-            if ((g_status.mode == CHASSIS_MODE_MANUAL) && HW_MANUAL_OPEN_LOOP_TEST)
-            {
-                pid_reset(&g_wheel_pid[i]);
-                g_status.motor_duty[i] = chassis_clamp(chassis_manual_open_loop_duty(wheel_target_mps[i]),
-                                                       -(float)HW_MANUAL_MAX_DUTY,
-                                                       (float)HW_MANUAL_MAX_DUTY);
-            }
-            else
-            {
-                const float ff = chassis_feedforward_duty(wheel_target_mps[i]);
-                const float fb = pid_compute(&g_wheel_pid[i], wheel_target_mps[i], g_runtime.odom.wheel_speed_mps[i], dt_s);
-
-                g_status.motor_duty[i] = chassis_clamp(ff + fb, -(float)HW_MOTOR_DUTY_MAX, (float)HW_MOTOR_DUTY_MAX);
-                if (g_status.mode == CHASSIS_MODE_MANUAL)
-                {
-                    g_status.motor_duty[i] = chassis_clamp(g_status.motor_duty[i],
-                                                           -(float)HW_MANUAL_MAX_DUTY,
-                                                           (float)HW_MANUAL_MAX_DUTY);
-                }
-            }
+            duty_limit = (g_status.mode == CHASSIS_MODE_NAV) ? (float)HW_MOTOR_DUTY_MAX : (float)HW_MANUAL_MAX_DUTY;
+            duty_ff = chassis_feedforward_duty(i, wheel_target_mps[i]);
+            duty_raw = duty_ff + pid_compute(&g_wheel_pid[i], wheel_target_mps[i], g_runtime.odom.wheel_speed_mps[i], dt_s);
+            g_status.motor_duty[i] = chassis_clamp(duty_raw, -duty_limit, duty_limit);
 
             g_status.wheel_error_mps[i] = g_status.wheel_target_mps[i] - g_status.wheel_measured_mps[i];
-            g_status.wheel_output_saturated[i] = (fabsf(g_status.motor_duty[i]) >= ((float)HW_MOTOR_DUTY_MAX - 0.5f)) ? 1U : 0U;
+            g_status.wheel_output_saturated[i] = (fabsf(g_status.motor_duty[i]) >= (duty_limit - 0.5f)) ? 1U : 0U;
         }
     }
     else
