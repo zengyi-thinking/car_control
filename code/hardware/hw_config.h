@@ -30,6 +30,10 @@
 #define HW_WHEEL_TUNE_KI_STEP                 5.0f
 #define HW_WHEEL_TUNE_KD_STEP                 0.05f
 
+#define HW_POSITION_EDIT_RATE_MPS             0.25f
+#define HW_POSITION_EDIT_MAX_OFFSET_M         2.00f
+#define HW_POSITION_TARGET_TOL_M              0.03f
+
 /* 轻量静摩擦补偿，避免低速纯 PID 起步太软 */
 #define HW_MOTOR_FF_KS_DUTY                   220.0f
 #define HW_MOTOR_FF_KV_DUTY_PER_MPS           1200.0f

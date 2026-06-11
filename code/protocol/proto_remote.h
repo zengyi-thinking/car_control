@@ -6,6 +6,7 @@
 #define REMOTE_FRAME_HEAD            0xA3U
 #define REMOTE_FRAME_SIZE            18U
 #define REMOTE_HEADING_RESET_KEY     0U
+#define REMOTE_RIGHT_STICK_PRESS_KEY  1U
 #define REMOTE_NAV_ENTER_KEY         2U
 #define REMOTE_NAV_EXIT_KEY          3U
 

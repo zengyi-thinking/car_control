@@ -29,6 +29,17 @@ static const char *hw_display_mode_name(chassis_mode_t mode)
     }
 }
 
+static const char *hw_display_position_state_name(uint8 state)
+{
+    switch (state)
+    {
+        case CHASSIS_POSITION_MOVE_EDIT: return "EDIT";
+        case CHASSIS_POSITION_MOVE_RUN:  return "RUN";
+        case CHASSIS_POSITION_MOVE_DONE: return "DONE";
+        default:                         return "IDLE";
+    }
+}
+
 static const char *hw_display_wheel_name(uint8 wheel_index)
 {
     switch (wheel_index)
@@ -37,17 +48,6 @@ static const char *hw_display_wheel_name(uint8 wheel_index)
         case 1U: return "RF";
         case 2U: return "LB";
         case 3U: return "RB";
-        default: return "??";
-    }
-}
-
-static const char *hw_display_tune_param_name(uint8 param_index)
-{
-    switch (param_index)
-    {
-        case CHASSIS_TUNE_PARAM_KP: return "KP";
-        case CHASSIS_TUNE_PARAM_KI: return "KI";
-        case CHASSIS_TUNE_PARAM_KD: return "KD";
         default: return "??";
     }
 }
@@ -62,6 +62,11 @@ static void hw_display_pad_line(char *line)
     }
 
     len = (uint8)strlen(line);
+    if (len > DISPLAY_TEXT_COLS)
+    {
+        len = DISPLAY_TEXT_COLS;
+        line[len] = '\0';
+    }
     while ((len < DISPLAY_TEXT_COLS) && (len < (DISPLAY_LINE_BUF_LEN - 1U)))
     {
         line[len++] = ' ';
@@ -104,14 +109,26 @@ static uint16 hw_display_line_color(uint8 line, const chassis_status_t *status)
         return RGB565_CYAN;
     }
 
-    if ((line == 1U) || (line == 2U) || (line == 3U))
+    if ((line >= 1U) && (line <= 5U))
     {
-        return (status->tune_active != 0U) ? RGB565_YELLOW : RGB565_WHITE;
+        if (status->tune_active != 0U)
+        {
+            return RGB565_YELLOW;
+        }
+        if (status->position_move_state == CHASSIS_POSITION_MOVE_RUN)
+        {
+            return (line == 5U) ? RGB565_CYAN : RGB565_WHITE;
+        }
+        if (status->position_move_state == CHASSIS_POSITION_MOVE_EDIT)
+        {
+            return RGB565_YELLOW;
+        }
+        return RGB565_WHITE;
     }
 
-    if ((line >= 5U) && (line <= 12U))
+    if ((line >= 6U) && (line <= 13U))
     {
-        wheel_index = (uint8)((line - 5U) / 2U);
+        wheel_index = (uint8)((line - 6U) / 2U);
         if ((status->tune_active != 0U) && (wheel_index == status->tune_wheel_index))
         {
             return ((line & 1U) == 1U) ? RGB565_YELLOW : RGB565_CYAN;
@@ -136,9 +153,9 @@ static void hw_display_draw_layout(void)
 
     tft180_full(RGB565_BLACK);
     tft180_draw_line(0, 10, 127, 10, RGB565_CYAN);
-    tft180_draw_line(0, 42, 127, 42, RGB565_GRAY);
-    tft180_draw_line(0, 74, 127, 74, RGB565_GRAY);
-    tft180_draw_line(0, 106, 127, 106, RGB565_GRAY);
+    tft180_draw_line(0, 50, 127, 50, RGB565_GRAY);
+    tft180_draw_line(0, 82, 127, 82, RGB565_GRAY);
+    tft180_draw_line(0, 114, 127, 114, RGB565_GRAY);
 
     memset(g_last_lines, 0, sizeof(g_last_lines));
     g_layout_drawn = 1U;
@@ -194,32 +211,26 @@ void hw_display_update(const chassis_status_t *status)
     memset(lines, 0, sizeof(lines));
     mode_name = hw_display_mode_name(status->mode);
 
-    hw_display_make_line(lines[0], "WHEEL PID CONTROL");
+    hw_display_make_line(lines[0], "PID+POS");
     if (status->startup_lock_done == 0U)
     {
         const float remain_s = (status->startup_lock_elapsed_s < 2.0f) ? (2.0f - status->startup_lock_elapsed_s) : 0.0f;
-        hw_display_make_line(lines[1], "MODE:%-5s BOOT:%3.1fs", mode_name, remain_s);
+        hw_display_make_line(lines[1], "M:%-4s P:%-4s B:%3.1f", mode_name, hw_display_position_state_name(status->position_move_state), remain_s);
     }
     else
     {
-        hw_display_make_line(lines[1], "MODE:%-5s LOCK:OK", mode_name);
+        hw_display_make_line(lines[1], "M:%-4s P:%-4s LOCK", mode_name, hw_display_position_state_name(status->position_move_state));
     }
 
-    if (status->tune_active != 0U)
-    {
-        hw_display_make_line(lines[2], "SEL:%s P:%-2s V:%7.2f", hw_display_wheel_name(status->tune_wheel_index), hw_display_tune_param_name(status->tune_param_index), status->tune_selected_value);
-        hw_display_make_line(lines[3], "TGT:%+.2f STEP:%5.2f", status->tune_target_mps, status->tune_selected_step);
-    }
-    else
-    {
-        hw_display_make_line(lines[2], "Y:%+6.1f TY:%+6.1f", status->pose_yaw_deg, status->target_yaw_deg);
-        hw_display_make_line(lines[3], "E:%+5.1f O:%+5.2f", status->yaw_error_deg, status->cmd_omega_radps);
-    }
+    hw_display_make_line(lines[2], "DX:%+5.2f DY:%+5.2f", status->position_edit_dx_m, status->position_edit_dy_m);
+    hw_display_make_line(lines[3], "TX:%+5.2f TY:%+5.2f", status->target_x_m, status->target_y_m);
+    hw_display_make_line(lines[4], "EX:%+5.2f EY:%+5.2f", status->pos_error_x_m, status->pos_error_y_m);
+    hw_display_make_line(lines[5], "Y:%+5.1f E:%+5.1f", status->pose_yaw_deg, status->yaw_error_deg);
 
-    hw_display_make_wheel_lines(lines[5], lines[6], status, 0U);
-    hw_display_make_wheel_lines(lines[7], lines[8], status, 1U);
-    hw_display_make_wheel_lines(lines[9], lines[10], status, 2U);
-    hw_display_make_wheel_lines(lines[11], lines[12], status, 3U);
+    hw_display_make_wheel_lines(lines[6], lines[7], status, 0U);
+    hw_display_make_wheel_lines(lines[8], lines[9], status, 1U);
+    hw_display_make_wheel_lines(lines[10], lines[11], status, 2U);
+    hw_display_make_wheel_lines(lines[12], lines[13], status, 3U);
 
     if (status->tune_active != 0U)
     {
@@ -227,7 +238,7 @@ void hw_display_update(const chassis_status_t *status)
     }
     else
     {
-        hw_display_make_line(lines[14], "DUTY CAP:%4u", (uint16)HW_MANUAL_MAX_DUTY);
+        hw_display_make_line(lines[14], "P:%-4s D:%5.2f", hw_display_position_state_name(status->position_move_state), status->distance_to_target_m);
     }
 
     for (i = 0U; i < DISPLAY_LINE_COUNT; ++i)

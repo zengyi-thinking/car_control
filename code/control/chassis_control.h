@@ -17,6 +17,14 @@ typedef enum
 
 typedef enum
 {
+    CHASSIS_POSITION_MOVE_IDLE = 0,
+    CHASSIS_POSITION_MOVE_EDIT = 1,
+    CHASSIS_POSITION_MOVE_RUN = 2,
+    CHASSIS_POSITION_MOVE_DONE = 3,
+} chassis_position_move_state_t;
+
+typedef enum
+{
     CHASSIS_TUNE_PARAM_KP = 0,
     CHASSIS_TUNE_PARAM_KI = 1,
     CHASSIS_TUNE_PARAM_KD = 2,
@@ -56,6 +64,8 @@ typedef struct
     float pos_error_x_m;
     float pos_error_y_m;
     float distance_to_target_m;
+    float position_edit_dx_m;
+    float position_edit_dy_m;
 
     float wheel_target_mps[4];
     float wheel_measured_mps[4];
@@ -77,6 +87,7 @@ typedef struct
     uint8 tune_active;
     uint8 tune_wheel_index;
     uint8 tune_param_index;
+    uint8 position_move_state;
     float tune_target_mps;
     float tune_selected_value;
     float tune_selected_step;

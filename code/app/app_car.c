@@ -140,7 +140,7 @@ void app_car_step(void)
         hw_motor_drv8701e_stop_all();
     }
 
-    if (status->remote_fresh || status->nav_fresh || status->tune_active)
+    if (status->remote_fresh || status->nav_fresh || status->tune_active || (status->position_move_state == CHASSIS_POSITION_MOVE_RUN))
     {
         hw_indicator_on();
     }
