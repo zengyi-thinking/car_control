@@ -30,12 +30,12 @@
 #define CHASSIS_POS_DEADBAND_M              0.03f
 #define CHASSIS_ARRIVE_VEL_MPS              0.08f
 
-#define CHASSIS_HEADING_KP                  1.8f
-#define CHASSIS_HEADING_KI                  0.05f
-#define CHASSIS_HEADING_KD                  0.20f
-#define CHASSIS_HEADING_I_LIMIT             0.10f
-#define CHASSIS_HEADING_ERR_DEADBAND_DEG    0.8f
-#define CHASSIS_HEADING_GYRO_DEADBAND_RADPS 0.020f
+#define CHASSIS_HEADING_KP                  2.4f
+#define CHASSIS_HEADING_KI                  0.03f
+#define CHASSIS_HEADING_KD                  0.28f
+#define CHASSIS_HEADING_I_LIMIT             0.06f
+#define CHASSIS_HEADING_ERR_DEADBAND_DEG    0.4f
+#define CHASSIS_HEADING_GYRO_DEADBAND_RADPS 0.010f
 
 #define CHASSIS_STARTUP_LOCK_TIME_S         2.0f
 #define CHASSIS_STARTUP_YAW_STABLE_DEG      4.0f
@@ -123,6 +123,8 @@ typedef struct
     uint8 tune_value_axis_armed;
     float position_edit_dx_m;
     float position_edit_dy_m;
+    float position_target_forward_m;
+    float position_target_right_m;
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -143,6 +145,66 @@ static float chassis_clamp(float value, float min_value, float max_value)
 }
 
 static float chassis_wrap_deg(float deg);
+
+/*
+ * 坐标约定:
+ * - IMU/编辑参考系: +X 左, +Y 前
+ * - 底盘车体系:      forward 为前进, right 为右移
+ * - 里程计/场地系:   x/y 为世界平面坐标, 由当前 yaw 决定和车体的夹角
+ *
+ * 关系分两步:
+ * 1) IMU编辑量 -> 车体位移: forward = +Y, right = -X
+ * 2) 车体位移   -> 场地位移: 按当前 yaw 旋转到世界坐标
+ */
+static void chassis_imu_to_body_move(float dx_left_m, float dy_front_m, float *forward_m, float *right_m)
+{
+    if (forward_m)
+    {
+        *forward_m = dy_front_m;
+    }
+    if (right_m)
+    {
+        *right_m = -dx_left_m;
+    }
+}
+
+static void chassis_body_to_field_move(float forward_m, float right_m, float yaw_deg, float *field_x_m, float *field_y_m)
+{
+    const float yaw_rad = yaw_deg * CHASSIS_DEG_TO_RAD;
+    const float cos_yaw = cosf(yaw_rad);
+    const float sin_yaw = sinf(yaw_rad);
+
+    if (field_x_m)
+    {
+        *field_x_m = (cos_yaw * forward_m) - (sin_yaw * right_m);
+    }
+    if (field_y_m)
+    {
+        *field_y_m = (sin_yaw * forward_m) + (cos_yaw * right_m);
+    }
+}
+
+static void chassis_field_to_imu_error(float field_x_err_m,
+                                       float field_y_err_m,
+                                       float yaw_deg,
+                                       float *left_err_m,
+                                       float *front_err_m)
+{
+    const float yaw_rad = yaw_deg * CHASSIS_DEG_TO_RAD;
+    const float cos_yaw = cosf(yaw_rad);
+    const float sin_yaw = sinf(yaw_rad);
+    const float forward_err_m = (cos_yaw * field_x_err_m) + (sin_yaw * field_y_err_m);
+    const float right_err_m = (-sin_yaw * field_x_err_m) + (cos_yaw * field_y_err_m);
+
+    if (left_err_m)
+    {
+        *left_err_m = -right_err_m;
+    }
+    if (front_err_m)
+    {
+        *front_err_m = forward_err_m;
+    }
+}
 
 static float chassis_tune_param_step(uint8 param_index)
 {
@@ -322,6 +384,42 @@ static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float dt_s)
         return 0.0f;
     }
 
+    yaw_err_rad = yaw_err_deg * CHASSIS_DEG_TO_RAD;
+
+    integral_candidate = g_runtime.heading_integral + (yaw_err_rad * CHASSIS_HEADING_KI * dt_s);
+    integral_candidate = chassis_clamp(integral_candidate, -CHASSIS_HEADING_I_LIMIT, CHASSIS_HEADING_I_LIMIT);
+
+    unsat_output = CHASSIS_HEADING_KP * yaw_err_rad + integral_candidate - CHASSIS_HEADING_KD * gyro_z_corrected_radps;
+    if ((fabsf(unsat_output) <= HW_MAX_YAW_RATE_RADPS) ||
+        ((unsat_output > HW_MAX_YAW_RATE_RADPS) && (yaw_err_rad < 0.0f)) ||
+        ((unsat_output < -HW_MAX_YAW_RATE_RADPS) && (yaw_err_rad > 0.0f)))
+    {
+        g_runtime.heading_integral = integral_candidate;
+    }
+
+    omega_cmd = CHASSIS_HEADING_KP * yaw_err_rad + g_runtime.heading_integral - CHASSIS_HEADING_KD * gyro_z_corrected_radps;
+    omega_cmd = chassis_clamp(omega_cmd, -HW_MAX_YAW_RATE_RADPS, HW_MAX_YAW_RATE_RADPS);
+    g_status.yaw_error_deg = yaw_err_deg;
+    return omega_cmd;
+}
+
+static float chassis_yaw_hold_strict(float yaw_deg, float gyro_z_radps, float dt_s)
+{
+    float yaw_err_deg;
+    float yaw_err_rad;
+    float integral_candidate;
+    float unsat_output;
+    float omega_cmd;
+    float gyro_z_corrected_radps;
+
+    if (!g_runtime.yaw_lock_valid || (dt_s <= 0.0f))
+    {
+        g_status.yaw_error_deg = 0.0f;
+        return 0.0f;
+    }
+
+    gyro_z_corrected_radps = gyro_z_radps - g_runtime.gyro_z_bias_radps;
+    yaw_err_deg = chassis_yaw_error_deg(yaw_deg);
     yaw_err_rad = yaw_err_deg * CHASSIS_DEG_TO_RAD;
 
     integral_candidate = g_runtime.heading_integral + (yaw_err_rad * CHASSIS_HEADING_KI * dt_s);
@@ -523,6 +621,8 @@ static void chassis_position_move_reset(void)
     g_runtime.position_press_armed = 0U;
     g_runtime.position_edit_dx_m = 0.0f;
     g_runtime.position_edit_dy_m = 0.0f;
+    g_runtime.position_target_forward_m = 0.0f;
+    g_runtime.position_target_right_m = 0.0f;
     g_status.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
 }
 
@@ -544,14 +644,26 @@ static void chassis_position_move_abort(void)
 
 static void chassis_position_move_commit(float yaw_deg)
 {
-    const float yaw_rad = yaw_deg * CHASSIS_DEG_TO_RAD;
-    const float cos_yaw = cosf(yaw_rad);
-    const float sin_yaw = sinf(yaw_rad);
-    const float field_dx = (cos_yaw * g_runtime.position_edit_dx_m) - (sin_yaw * g_runtime.position_edit_dy_m);
-    const float field_dy = (sin_yaw * g_runtime.position_edit_dx_m) + (cos_yaw * g_runtime.position_edit_dy_m);
+    float target_forward_m = 0.0f;
+    float target_right_m = 0.0f;
+    float target_field_x_m = 0.0f;
+    float target_field_y_m = 0.0f;
 
-    g_status.target_x_m = g_status.pose_x_m + field_dx;
-    g_status.target_y_m = g_status.pose_y_m + field_dy;
+    chassis_imu_to_body_move(g_runtime.position_edit_dx_m,
+                             g_runtime.position_edit_dy_m,
+                             &target_forward_m,
+                             &target_right_m);
+    chassis_body_to_field_move(target_forward_m,
+                               target_right_m,
+                               yaw_deg,
+                               &target_field_x_m,
+                               &target_field_y_m);
+
+    g_runtime.position_target_forward_m = g_status.pose_x_m + target_field_x_m;
+    g_runtime.position_target_right_m = g_status.pose_y_m + target_field_y_m;
+
+    g_status.target_x_m = g_runtime.position_edit_dx_m;
+    g_status.target_y_m = g_runtime.position_edit_dy_m;
     g_status.target_valid = 1U;
     g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
     g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
@@ -622,7 +734,7 @@ static void chassis_position_move_update(const proto_remote_data_t *remote, floa
 
         if (fabsf(right_x) > CHASSIS_POSITION_EDIT_DEADBAND)
         {
-            g_runtime.position_edit_dx_m += right_x * HW_POSITION_EDIT_RATE_MPS * dt_s;
+            g_runtime.position_edit_dx_m += (-right_x) * HW_POSITION_EDIT_RATE_MPS * dt_s;
         }
         if (fabsf(right_y) > CHASSIS_POSITION_EDIT_DEADBAND)
         {
@@ -639,7 +751,7 @@ static void chassis_position_move_update(const proto_remote_data_t *remote, floa
         commit_pressed = chassis_remote_button_pressed(remote, REMOTE_RIGHT_STICK_PRESS_KEY);
         if (commit_pressed != 0U)
         {
-            if (g_status.pose_valid && g_runtime.yaw_lock_valid && g_status.nav_fresh)
+            if (g_status.pose_valid && g_runtime.yaw_lock_valid)
             {
                 chassis_position_move_commit(yaw_deg);
             }
@@ -654,14 +766,21 @@ static void chassis_position_move_update(const proto_remote_data_t *remote, floa
     }
     else
     {
-        const float err_x = g_status.target_x_m - g_status.pose_x_m;
-        const float err_y = g_status.target_y_m - g_status.pose_y_m;
-        const float distance_m = sqrtf(err_x * err_x + err_y * err_y);
+        const float err_field_x = g_runtime.position_target_forward_m - g_status.pose_x_m;
+        const float err_field_y = g_runtime.position_target_right_m - g_status.pose_y_m;
+        const float distance_m = sqrtf(err_field_x * err_field_x + err_field_y * err_field_y);
         const float speed_mps = sqrtf((g_runtime.odom.vx_field_mps * g_runtime.odom.vx_field_mps) +
                                       (g_runtime.odom.vy_field_mps * g_runtime.odom.vy_field_mps));
+        float err_left_m = 0.0f;
+        float err_front_m = 0.0f;
 
-        g_status.pos_error_x_m = err_x;
-        g_status.pos_error_y_m = err_y;
+        chassis_field_to_imu_error(err_field_x,
+                                   err_field_y,
+                                   yaw_deg,
+                                   &err_left_m,
+                                   &err_front_m);
+        g_status.pos_error_x_m = err_left_m;
+        g_status.pos_error_y_m = err_front_m;
         g_status.distance_to_target_m = distance_m;
 
         if ((distance_m <= HW_POSITION_TARGET_TOL_M) &&
@@ -814,21 +933,21 @@ static uint8 chassis_run_position_control(float yaw_deg,
                                           float *vy_body_cmd,
                                           float *omega_cmd)
 {
-    const float err_x = g_status.target_x_m - g_status.pose_x_m;
-    const float err_y = g_status.target_y_m - g_status.pose_y_m;
-    const float distance_m = sqrtf(err_x * err_x + err_y * err_y);
+    const float err_field_x = g_runtime.position_target_forward_m - g_status.pose_x_m;
+    const float err_field_y = g_runtime.position_target_right_m - g_status.pose_y_m;
+    const float distance_m = sqrtf((err_field_x * err_field_x) + (err_field_y * err_field_y));
     const float braking_speed_limit = sqrtf(2.0f * HW_MAX_LINEAR_ACCEL_MPS2 * distance_m);
     const float max_step = HW_MAX_LINEAR_ACCEL_MPS2 * dt_s;
     const float yaw_rad = yaw_deg * CHASSIS_DEG_TO_RAD;
 
-    *vx_field_cmd = CHASSIS_POS_KP * err_x - CHASSIS_VEL_DAMP_K * g_runtime.odom.vx_field_mps;
-    *vy_field_cmd = CHASSIS_POS_KP * err_y - CHASSIS_VEL_DAMP_K * g_runtime.odom.vy_field_mps;
+    *vx_field_cmd = CHASSIS_POS_KP * err_field_x - CHASSIS_VEL_DAMP_K * g_runtime.odom.vx_field_mps;
+    *vy_field_cmd = CHASSIS_POS_KP * err_field_y - CHASSIS_VEL_DAMP_K * g_runtime.odom.vy_field_mps;
 
-    if (fabsf(err_x) < CHASSIS_POS_DEADBAND_M)
+    if (fabsf(err_field_x) < CHASSIS_POS_DEADBAND_M)
     {
         *vx_field_cmd = 0.0f;
     }
-    if (fabsf(err_y) < CHASSIS_POS_DEADBAND_M)
+    if (fabsf(err_field_y) < CHASSIS_POS_DEADBAND_M)
     {
         *vy_field_cmd = 0.0f;
     }
@@ -854,10 +973,13 @@ static uint8 chassis_run_position_control(float yaw_deg,
     *vy_field_cmd = g_runtime.cmd_vy_field_state;
     *vx_body_cmd = cosf(yaw_rad) * (*vx_field_cmd) + sinf(yaw_rad) * (*vy_field_cmd);
     *vy_body_cmd = -sinf(yaw_rad) * (*vx_field_cmd) + cosf(yaw_rad) * (*vy_field_cmd);
-    *omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+    *omega_cmd = chassis_yaw_hold_strict(yaw_deg, gyro_z_radps, dt_s);
 
-    g_status.pos_error_x_m = err_x;
-    g_status.pos_error_y_m = err_y;
+    chassis_field_to_imu_error(err_field_x,
+                               err_field_y,
+                               yaw_deg,
+                               &g_status.pos_error_x_m,
+                               &g_status.pos_error_y_m);
     g_status.distance_to_target_m = distance_m;
     g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
     g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
@@ -961,6 +1083,9 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     float wheel_target_mps[4] = {0};
     uint8 command_active = 0U;
     uint8 attitude_valid = 0U;
+    float left_x = 0.0f;
+    float left_y = 0.0f;
+    uint8 manual_override = 0U;
 
     if ((enc_counts == 0) || (dt_s <= 0.0f))
     {
@@ -1054,6 +1179,22 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     g_status.position_edit_dx_m = g_runtime.position_edit_dx_m;
     g_status.position_edit_dy_m = g_runtime.position_edit_dy_m;
 
+    if (g_status.remote_fresh)
+    {
+        left_x = chassis_normalize_remote_axis(g_runtime.remote.joystick[0]);
+        left_y = chassis_normalize_remote_axis(g_runtime.remote.joystick[1]);
+        chassis_manual_snap_axes(&left_x, &left_y);
+        manual_override = (uint8)((fabsf(left_x) > CHASSIS_POSITION_EDIT_AXIS_ON) ||
+                                  (fabsf(left_y) > CHASSIS_POSITION_EDIT_AXIS_ON));
+    }
+
+    if ((g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) && manual_override)
+    {
+        chassis_position_move_abort();
+        g_runtime.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
+        g_status.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
+    }
+
     g_status.joy_x_norm = 0.0f;
     g_status.joy_y_norm = 0.0f;
     g_status.user_cmd_x_mps = 0.0f;
@@ -1069,7 +1210,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     {
         command_active = 1U;
         g_status.position_move_state = CHASSIS_POSITION_MOVE_RUN;
-        if (g_status.pose_valid && g_runtime.yaw_lock_valid && g_status.nav_fresh)
+        if (g_status.pose_valid && g_runtime.yaw_lock_valid)
         {
             const uint8 arrived = chassis_run_position_control(yaw_deg,
                                                                gyro_z_radps,
@@ -1151,10 +1292,15 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         {
             if (g_status.remote_fresh)
             {
-                float joy_x = chassis_normalize_remote_axis(g_runtime.remote.joystick[0]);
-                float joy_y = chassis_normalize_remote_axis(g_runtime.remote.joystick[1]);
+                float joy_x = left_x;
+                float joy_y = left_y;
 
-                chassis_manual_snap_axes(&joy_x, &joy_y);
+                if (!manual_override)
+                {
+                    joy_x = chassis_normalize_remote_axis(g_runtime.remote.joystick[0]);
+                    joy_y = chassis_normalize_remote_axis(g_runtime.remote.joystick[1]);
+                    chassis_manual_snap_axes(&joy_x, &joy_y);
+                }
 
                 g_status.joy_x_norm = joy_x;
                 g_status.joy_y_norm = joy_y;

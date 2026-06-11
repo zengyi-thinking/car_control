@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define DISPLAY_LINE_H               8U
-#define DISPLAY_TEXT_COLS            21U
+#define DISPLAY_TEXT_COLS            18U
 #define DISPLAY_LINE_BUF_LEN         32U
 #define DISPLAY_REFRESH_TICKS        10U
 #define DISPLAY_LINE_COUNT           20U
@@ -17,17 +17,6 @@ static uint8 g_display_ready = 0U;
 static uint8 g_display_tick = 0U;
 static uint8 g_layout_drawn = 0U;
 static char g_last_lines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
-
-static const char *hw_display_mode_name(chassis_mode_t mode)
-{
-    switch (mode)
-    {
-        case CHASSIS_MODE_MANUAL:     return "MANUAL";
-        case CHASSIS_MODE_NAV:        return "NAV";
-        case CHASSIS_MODE_WHEEL_TUNE: return "TUNE";
-        default:                      return "STOP";
-    }
-}
 
 static const char *hw_display_position_state_name(uint8 state)
 {
@@ -153,9 +142,9 @@ static void hw_display_draw_layout(void)
 
     tft180_full(RGB565_BLACK);
     tft180_draw_line(0, 10, 127, 10, RGB565_CYAN);
-    tft180_draw_line(0, 50, 127, 50, RGB565_GRAY);
-    tft180_draw_line(0, 82, 127, 82, RGB565_GRAY);
-    tft180_draw_line(0, 114, 127, 114, RGB565_GRAY);
+    tft180_draw_line(0, 26, 127, 26, RGB565_GRAY);
+    tft180_draw_line(0, 44, 127, 44, RGB565_GRAY);
+    tft180_draw_line(0, 62, 127, 62, RGB565_GRAY);
 
     memset(g_last_lines, 0, sizeof(g_last_lines));
     g_layout_drawn = 1U;
@@ -189,7 +178,6 @@ static void hw_display_make_wheel_lines(char *line_a, char *line_b, const chassi
 void hw_display_update(const chassis_status_t *status)
 {
     char lines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
-    const char *mode_name;
     uint8 i;
 
     if (!g_display_ready || (status == 0))
@@ -209,37 +197,18 @@ void hw_display_update(const chassis_status_t *status)
     g_display_tick = 0U;
 
     memset(lines, 0, sizeof(lines));
-    mode_name = hw_display_mode_name(status->mode);
 
     hw_display_make_line(lines[0], "PID+POS");
-    if (status->startup_lock_done == 0U)
-    {
-        const float remain_s = (status->startup_lock_elapsed_s < 2.0f) ? (2.0f - status->startup_lock_elapsed_s) : 0.0f;
-        hw_display_make_line(lines[1], "M:%-4s P:%-4s B:%3.1f", mode_name, hw_display_position_state_name(status->position_move_state), remain_s);
-    }
-    else
-    {
-        hw_display_make_line(lines[1], "M:%-4s P:%-4s LOCK", mode_name, hw_display_position_state_name(status->position_move_state));
-    }
-
-    hw_display_make_line(lines[2], "DX:%+5.2f DY:%+5.2f", status->position_edit_dx_m, status->position_edit_dy_m);
-    hw_display_make_line(lines[3], "TX:%+5.2f TY:%+5.2f", status->target_x_m, status->target_y_m);
-    hw_display_make_line(lines[4], "EX:%+5.2f EY:%+5.2f", status->pos_error_x_m, status->pos_error_y_m);
-    hw_display_make_line(lines[5], "Y:%+5.1f E:%+5.1f", status->pose_yaw_deg, status->yaw_error_deg);
+    hw_display_make_line(lines[1], "Y:%+5.1f E:%+5.1f", status->pose_yaw_deg, status->yaw_error_deg);
+    hw_display_make_line(lines[2], "DXm:%+5.2f", status->position_edit_dx_m);
+    hw_display_make_line(lines[3], "DYm:%+5.2f", status->position_edit_dy_m);
+    hw_display_make_line(lines[4], "TXm:%+5.2f", status->target_x_m);
+    hw_display_make_line(lines[5], "TYm:%+5.2f", status->target_y_m);
 
     hw_display_make_wheel_lines(lines[6], lines[7], status, 0U);
     hw_display_make_wheel_lines(lines[8], lines[9], status, 1U);
     hw_display_make_wheel_lines(lines[10], lines[11], status, 2U);
     hw_display_make_wheel_lines(lines[12], lines[13], status, 3U);
-
-    if (status->tune_active != 0U)
-    {
-        hw_display_make_line(lines[14], "VAL:%7.2f", status->tune_selected_value);
-    }
-    else
-    {
-        hw_display_make_line(lines[14], "P:%-4s D:%5.2f", hw_display_position_state_name(status->position_move_state), status->distance_to_target_m);
-    }
 
     for (i = 0U; i < DISPLAY_LINE_COUNT; ++i)
     {
