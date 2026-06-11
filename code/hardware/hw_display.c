@@ -195,29 +195,25 @@ void hw_display_update(const chassis_status_t *status)
     mode_name = hw_display_mode_name(status->mode);
 
     hw_display_make_line(lines[0], "WHEEL PID CONTROL");
+    if (status->startup_lock_done == 0U)
+    {
+        const float remain_s = (status->startup_lock_elapsed_s < 2.0f) ? (2.0f - status->startup_lock_elapsed_s) : 0.0f;
+        hw_display_make_line(lines[1], "MODE:%-5s BOOT:%3.1fs", mode_name, remain_s);
+    }
+    else
+    {
+        hw_display_make_line(lines[1], "MODE:%-5s LOCK:OK", mode_name);
+    }
 
     if (status->tune_active != 0U)
     {
-        hw_display_make_line(lines[1], "MODE:%-5s SEL:%s", mode_name, hw_display_wheel_name(status->tune_wheel_index));
-        hw_display_make_line(lines[2], "P:%-2s VAL:%7.2f", hw_display_tune_param_name(status->tune_param_index), status->tune_selected_value);
+        hw_display_make_line(lines[2], "SEL:%s P:%-2s V:%7.2f", hw_display_wheel_name(status->tune_wheel_index), hw_display_tune_param_name(status->tune_param_index), status->tune_selected_value);
         hw_display_make_line(lines[3], "TGT:%+.2f STEP:%5.2f", status->tune_target_mps, status->tune_selected_step);
     }
     else
     {
-        float yaw_err = status->target_yaw_deg - status->pose_yaw_deg;
-
-        while (yaw_err > 180.0f)
-        {
-            yaw_err -= 360.0f;
-        }
-        while (yaw_err < -180.0f)
-        {
-            yaw_err += 360.0f;
-        }
-
-        hw_display_make_line(lines[1], "MODE:%-5s REM:%u", mode_name, status->remote_fresh);
-        hw_display_make_line(lines[2], "YAW:%7.1f ERR:%+5.1f", status->pose_yaw_deg, yaw_err);
-        hw_display_make_line(lines[3], "CMDX:%+4.2f Y:%+4.2f", status->cmd_vx_body_mps, status->cmd_vy_body_mps);
+        hw_display_make_line(lines[2], "Y:%+6.1f TY:%+6.1f", status->pose_yaw_deg, status->target_yaw_deg);
+        hw_display_make_line(lines[3], "E:%+5.1f O:%+5.2f", status->yaw_error_deg, status->cmd_omega_radps);
     }
 
     hw_display_make_wheel_lines(lines[5], lines[6], status, 0U);

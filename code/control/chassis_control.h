@@ -46,6 +46,9 @@ typedef struct
     float cmd_vx_body_mps;
     float cmd_vy_body_mps;
     float cmd_omega_radps;
+    float yaw_error_deg;
+    float gyro_z_bias_radps;
+    float startup_lock_elapsed_s;
     float joy_x_norm;
     float joy_y_norm;
     float user_cmd_x_mps;
@@ -68,6 +71,7 @@ typedef struct
     uint8 pose_valid;
     uint8 target_valid;
     uint8 heading_valid;
+    uint8 startup_lock_done;
     uint8 using_legacy_mode;
     uint8 enabled;
     uint8 tune_active;
