@@ -107,6 +107,8 @@ typedef struct
     float last_yaw_deg;
     float cmd_vx_field_state;
     float cmd_vy_field_state;
+    float cmd_vx_body_state;
+    float cmd_vy_body_state;
     float gyro_z_bias_radps;
     float startup_reference_yaw_deg;
     float startup_reference_yaw_min_deg;
@@ -230,6 +232,22 @@ static void chassis_tune_wrap_selection(void)
     g_chassis_wheel_pid_tune_param %= CHASSIS_TUNE_PARAM_COUNT;
 }
 
+static void chassis_reset_command_states(void)
+{
+    g_runtime.cmd_vx_field_state = 0.0f;
+    g_runtime.cmd_vy_field_state = 0.0f;
+    g_runtime.cmd_vx_body_state = 0.0f;
+    g_runtime.cmd_vy_body_state = 0.0f;
+}
+
+static void chassis_seed_command_states_from_odometry(void)
+{
+    g_runtime.cmd_vx_field_state = g_runtime.odom.vx_field_mps;
+    g_runtime.cmd_vy_field_state = g_runtime.odom.vy_field_mps;
+    g_runtime.cmd_vx_body_state = g_runtime.odom.vx_body_mps;
+    g_runtime.cmd_vy_body_state = g_runtime.odom.vy_body_mps;
+}
+
 static void chassis_tune_adjust_selected_pid(float delta)
 {
     pid_t *pid;
@@ -286,6 +304,7 @@ static void chassis_startup_lock_reset(void)
     g_status.gyro_z_bias_radps = 0.0f;
     g_status.target_yaw_deg = g_runtime.last_yaw_deg;
     g_status.yaw_error_deg = 0.0f;
+    chassis_reset_command_states();
 }
 
 static void chassis_startup_lock_step(float yaw_deg, float gyro_z_radps, float dt_s, uint8 attitude_valid)
@@ -634,8 +653,7 @@ static void chassis_position_move_set_state(chassis_position_move_state_t state)
 
 static void chassis_position_move_abort(void)
 {
-    g_runtime.cmd_vx_field_state = 0.0f;
-    g_runtime.cmd_vy_field_state = 0.0f;
+    chassis_reset_command_states();
     g_status.pos_error_x_m = 0.0f;
     g_status.pos_error_y_m = 0.0f;
     g_status.distance_to_target_m = 0.0f;
@@ -673,9 +691,24 @@ static void chassis_position_move_commit(float yaw_deg)
 
     g_runtime.position_edit_dx_m = 0.0f;
     g_runtime.position_edit_dy_m = 0.0f;
-    g_runtime.cmd_vx_field_state = 0.0f;
-    g_runtime.cmd_vy_field_state = 0.0f;
+    g_runtime.cmd_vx_field_state = g_runtime.odom.vx_field_mps;
+    g_runtime.cmd_vy_field_state = g_runtime.odom.vy_field_mps;
     chassis_position_move_set_state(CHASSIS_POSITION_MOVE_RUN);
+}
+
+static void chassis_apply_body_command_slew(float *vx_body_cmd, float *vy_body_cmd, float dt_s)
+{
+    const float max_step = HW_MAX_LINEAR_ACCEL_MPS2 * dt_s;
+
+    if ((vx_body_cmd == 0) || (vy_body_cmd == 0) || (dt_s <= 0.0f))
+    {
+        return;
+    }
+
+    g_runtime.cmd_vx_body_state = chassis_move_toward(g_runtime.cmd_vx_body_state, *vx_body_cmd, max_step);
+    g_runtime.cmd_vy_body_state = chassis_move_toward(g_runtime.cmd_vy_body_state, *vy_body_cmd, max_step);
+    *vx_body_cmd = g_runtime.cmd_vx_body_state;
+    *vy_body_cmd = g_runtime.cmd_vy_body_state;
 }
 
 static void chassis_position_move_update(const proto_remote_data_t *remote, float yaw_deg, float dt_s)
@@ -1003,6 +1036,7 @@ void chassis_control_init(void)
     g_chassis_wheel_pid_tune_enabled = 0U;
     chassis_startup_lock_reset();
     chassis_position_move_reset();
+    chassis_reset_command_states();
 
     for (uint8 i = 0; i < 4U; ++i)
     {
@@ -1037,6 +1071,7 @@ void chassis_control_reset(void)
     g_runtime.last_mode = CHASSIS_MODE_SAFE_STOP;
     chassis_startup_lock_reset();
     chassis_reset_pid_and_output();
+    chassis_reset_command_states();
 }
 
 void chassis_control_set_mode(chassis_mode_t mode)
@@ -1158,15 +1193,26 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     {
         if (g_status.mode == CHASSIS_MODE_SAFE_STOP)
         {
-            g_runtime.cmd_vx_field_state = 0.0f;
-            g_runtime.cmd_vy_field_state = 0.0f;
+            chassis_reset_command_states();
             chassis_reset_pid_and_output();
         }
         else if (g_status.mode == CHASSIS_MODE_WHEEL_TUNE)
         {
             chassis_tune_reset_latch();
         }
-        else if ((g_status.mode == CHASSIS_MODE_NAV) && !g_runtime.yaw_lock_valid)
+        else if (g_status.mode == CHASSIS_MODE_MANUAL)
+        {
+            chassis_seed_command_states_from_odometry();
+        }
+        else if (g_status.mode == CHASSIS_MODE_NAV)
+        {
+            chassis_seed_command_states_from_odometry();
+            if (!g_runtime.yaw_lock_valid)
+            {
+                chassis_reset_heading_controller(yaw_deg);
+            }
+        }
+        else if (!g_runtime.yaw_lock_valid)
         {
             chassis_reset_heading_controller(yaw_deg);
         }
@@ -1304,10 +1350,11 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
 
                 g_status.joy_x_norm = joy_x;
                 g_status.joy_y_norm = joy_y;
-                g_status.user_cmd_x_mps = joy_x * HW_MANUAL_MAX_LINEAR_SPEED_MPS;
+                g_status.user_cmd_x_mps = joy_x * HW_MANUAL_MAX_LATERAL_SPEED_MPS;
                 g_status.user_cmd_y_mps = joy_y * HW_MANUAL_MAX_LINEAR_SPEED_MPS;
                 vx_body_cmd = g_status.user_cmd_y_mps;
-                vy_body_cmd = g_status.user_cmd_x_mps;
+                vy_body_cmd = joy_x * HW_MANUAL_MAX_LATERAL_SPEED_MPS;
+                chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
                 command_active = 1U;
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
@@ -1344,6 +1391,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             {
                 vx_body_cmd = chassis_clamp(0.001f * (float)g_runtime.nav.err_fwd, -0.8f, 0.8f);
                 vy_body_cmd = chassis_clamp(-0.001f * (float)g_runtime.nav.err_lat, -0.8f, 0.8f);
+                chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
                 command_active = 1U;
                 g_status.pos_error_x_m = 0.0f;

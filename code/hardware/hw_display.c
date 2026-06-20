@@ -18,17 +18,6 @@ static uint8 g_display_tick = 0U;
 static uint8 g_layout_drawn = 0U;
 static char g_last_lines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
 
-static const char *hw_display_position_state_name(uint8 state)
-{
-    switch (state)
-    {
-        case CHASSIS_POSITION_MOVE_EDIT: return "EDIT";
-        case CHASSIS_POSITION_MOVE_RUN:  return "RUN";
-        case CHASSIS_POSITION_MOVE_DONE: return "DONE";
-        default:                         return "IDLE";
-    }
-}
-
 static const char *hw_display_wheel_name(uint8 wheel_index)
 {
     switch (wheel_index)

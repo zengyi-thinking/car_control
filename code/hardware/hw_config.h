@@ -23,6 +23,7 @@
 
 #define HW_MANUAL_MAX_DUTY                    6000
 #define HW_MANUAL_MAX_LINEAR_SPEED_MPS        0.80f
+#define HW_MANUAL_MAX_LATERAL_SPEED_MPS       0.95f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
