@@ -11,12 +11,12 @@
 #define DISPLAY_TEXT_COLS            18U
 #define DISPLAY_LINE_BUF_LEN         32U
 #define DISPLAY_REFRESH_TICKS        10U
-#define DISPLAY_LINE_COUNT           20U
+#define DISPLAY_USED_LINE_COUNT      14U   /* 实际使用的行数（行0标题 + 行1-5状态 + 行6-13轮组） */
 
 static uint8 g_display_ready = 0U;
 static uint8 g_display_tick = 0U;
 static uint8 g_layout_drawn = 0U;
-static char g_last_lines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
+static char g_last_lines[DISPLAY_USED_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
 
 static const char *hw_display_wheel_name(uint8 wheel_index)
 {
@@ -114,11 +114,6 @@ static uint16 hw_display_line_color(uint8 line, const chassis_status_t *status)
         return (((line & 1U) == 0U) && (status->wheel_output_saturated[wheel_index] != 0U)) ? RGB565_PINK : RGB565_WHITE;
     }
 
-    if (line == 14U)
-    {
-        return (status->tune_active != 0U) ? RGB565_YELLOW : RGB565_WHITE;
-    }
-
     return RGB565_WHITE;
 }
 
@@ -129,11 +124,10 @@ static void hw_display_draw_layout(void)
         return;
     }
 
+    /* 清屏并重置差分缓冲。不再画分隔横线——原横线坐标(10/26/44/62)不是
+     * 行高(8)的倍数，会穿过并遮挡文字行，导致数据显示残缺/看不见。
+     * 各区域靠标签前缀(Y:/DXm:/LF/RF...)自然区分，不需要横线分隔。 */
     tft180_full(RGB565_BLACK);
-    tft180_draw_line(0, 10, 127, 10, RGB565_CYAN);
-    tft180_draw_line(0, 26, 127, 26, RGB565_GRAY);
-    tft180_draw_line(0, 44, 127, 44, RGB565_GRAY);
-    tft180_draw_line(0, 62, 127, 62, RGB565_GRAY);
 
     memset(g_last_lines, 0, sizeof(g_last_lines));
     g_layout_drawn = 1U;
@@ -166,7 +160,7 @@ static void hw_display_make_wheel_lines(char *line_a, char *line_b, const chassi
 
 void hw_display_update(const chassis_status_t *status)
 {
-    char lines[DISPLAY_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
+    char lines[DISPLAY_USED_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
     uint8 i;
 
     if (!g_display_ready || (status == 0))
@@ -199,9 +193,10 @@ void hw_display_update(const chassis_status_t *status)
     hw_display_make_wheel_lines(lines[10], lines[11], status, 2U);
     hw_display_make_wheel_lines(lines[12], lines[13], status, 3U);
 
-    for (i = 0U; i < DISPLAY_LINE_COUNT; ++i)
+    /* 只刷新实际有内容的行（0-13），去掉原来对 14-19 空行的无意义判断。 */
+    for (i = 0U; i < DISPLAY_USED_LINE_COUNT; ++i)
     {
-        if ((lines[i][0] != '\0') && (strcmp(lines[i], g_last_lines[i]) != 0))
+        if (strcmp(lines[i], g_last_lines[i]) != 0)
         {
             hw_display_draw_line(i, hw_display_line_color(i, status), lines[i]);
             strcpy(g_last_lines[i], lines[i]);

@@ -1,4 +1,5 @@
 #include "zf_common_headfile.h"
+#include "hardware/hw_board_pins.h"
 #include "protocol/proto_nav.h"
 #include "protocol/proto_remote.h"
 
@@ -13,11 +14,11 @@ static void app_uart_service(uart_index_enum uart_index)
 
     while (uart_query_byte(uart_index, &byte))
     {
-        if (uart_index == UART_1)
+        if (uart_index == HW_REMOTE_UART)
         {
             proto_remote_on_byte(byte);
         }
-        else if (uart_index == UART_2)
+        else if (uart_index == HW_NAV_UART)
         {
             proto_nav_on_byte(byte);
         }

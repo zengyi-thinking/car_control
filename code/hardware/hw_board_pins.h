@@ -82,10 +82,15 @@
 #define HW_REMOTE_UART_TX_PIN              UART1_TX_P04_1
 #define HW_REMOTE_UART_RX_PIN              UART1_RX_P04_0
 
-#define HW_NAV_UART                        UART_2
+/*
+ * UAV / navigation link:
+ *   UART4 TX/RX routed to P14.1 / P14.0
+ *   Used by the car_link / proto_nav path.
+ */
+#define HW_NAV_UART                        UART_4
 #define HW_NAV_UART_BAUD                   115200U
-#define HW_NAV_UART_TX_PIN                 UART2_TX_P10_1
-#define HW_NAV_UART_RX_PIN                 UART2_RX_P10_0
+#define HW_NAV_UART_TX_PIN                 UART4_TX_P14_1
+#define HW_NAV_UART_RX_PIN                 UART4_RX_P14_0
 
 /* =========================
  * Indicator

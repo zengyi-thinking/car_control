@@ -39,6 +39,7 @@ static uint8 app_nav_fresh(void)
 static void app_update_mode(void)
 {
     const uint8 remote_fresh = app_remote_fresh();
+    const uint8 nav_fresh = app_nav_fresh();
 
     if (g_chassis_wheel_pid_tune_enabled)
     {
@@ -46,28 +47,17 @@ static void app_update_mode(void)
         return;
     }
 
-    switch (g_app_runtime.mode)
+    if (nav_fresh)
     {
-        case CHASSIS_MODE_MANUAL:
-        {
-            if (!remote_fresh)
-            {
-                g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
-            }
-        } break;
-
-        case CHASSIS_MODE_SAFE_STOP:
-        default:
-        {
-            if (remote_fresh)
-            {
-                g_app_runtime.mode = CHASSIS_MODE_MANUAL;
-            }
-            else
-            {
-                g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
-            }
-        } break;
+        g_app_runtime.mode = CHASSIS_MODE_NAV;
+    }
+    else if (remote_fresh)
+    {
+        g_app_runtime.mode = CHASSIS_MODE_MANUAL;
+    }
+    else
+    {
+        g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
     }
 }
 
