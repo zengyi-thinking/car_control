@@ -1,16 +1,14 @@
 /*******************************************************************************
  * 通信层
  *
- * 兼容两种帧:
- * 1. 0xA1 旧版误差帧
- *    0xA1 | err_fwd_H | err_fwd_L | err_lat_H | err_lat_L | flags | xor | 0x55
+ * 仅保留 A2 目标点帧:
+ *   0xA2 | cur_x_H | cur_x_L | cur_y_H | cur_y_L |
+ *         tgt_x_H | tgt_x_L | tgt_y_H | tgt_y_L |
+ *         yaw_H   | yaw_L   | flags   | xor | 0x55
  *
- * 2. 0xA2 新版导航帧
- *    0xA2 | cur_x_H | cur_x_L | cur_y_H | cur_y_L |
- *          tgt_x_H | tgt_x_L | tgt_y_H | tgt_y_L |
- *          yaw_H   | yaw_L   | flags   | xor | 0x55
- *
- * 其中 yaw 单位为 0.1 deg，坐标单位为 mm。
+ * 其中坐标单位为 mm，yaw 单位为 0.1 deg。
+ * 坐标语义统一按 flight_control 的场地坐标解释:
+ *   +X = 左, +Y = 前
  ******************************************************************************/
 
 #include "protocol/proto_nav.h"
@@ -59,17 +57,8 @@ static uint8 proto_nav_try_parse(proto_nav_data_t *out)
         return 0;
     }
 
-    if (rx_buf[0] == NAV_FRAME_HEAD_LEGACY)
+    if (rx_buf[0] == NAV_FRAME_HEAD_TARGET)
     {
-        out->mode = PROTO_NAV_MODE_LEGACY_ERROR;
-        out->err_fwd = (int16)(((uint16)rx_buf[1] << 8) | rx_buf[2]);
-        out->err_lat = (int16)(((uint16)rx_buf[3] << 8) | rx_buf[4]);
-        out->flags = rx_buf[5];
-        out->fresh = 1U;
-    }
-    else if (rx_buf[0] == NAV_FRAME_HEAD_TARGET)
-    {
-        out->mode = PROTO_NAV_MODE_TARGET;
         out->current_x_mm = (int16)(((uint16)rx_buf[1] << 8) | rx_buf[2]);
         out->current_y_mm = (int16)(((uint16)rx_buf[3] << 8) | rx_buf[4]);
         out->target_x_mm = (int16)(((uint16)rx_buf[5] << 8) | rx_buf[6]);
@@ -100,11 +89,7 @@ void proto_nav_on_byte(uint8 byte)
 {
     if (rx_idx == 0U)
     {
-        if (byte == NAV_FRAME_HEAD_LEGACY)
-        {
-            rx_expected_size = NAV_FRAME_SIZE_LEGACY;
-        }
-        else if (byte == NAV_FRAME_HEAD_TARGET)
+        if (byte == NAV_FRAME_HEAD_TARGET)
         {
             rx_expected_size = NAV_FRAME_SIZE_TARGET;
         }

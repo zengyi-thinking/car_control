@@ -30,6 +30,18 @@ static const char *hw_display_wheel_name(uint8 wheel_index)
     }
 }
 
+static const char *hw_display_mode_name(chassis_mode_t mode)
+{
+    switch (mode)
+    {
+        case CHASSIS_MODE_SAFE_STOP: return "STOP";
+        case CHASSIS_MODE_MANUAL: return "MAN";
+        case CHASSIS_MODE_NAV: return "NAV";
+        case CHASSIS_MODE_WHEEL_TUNE: return "TUNE";
+        default: return "UNK";
+    }
+}
+
 static void hw_display_pad_line(char *line)
 {
     uint8 len;
@@ -181,12 +193,12 @@ void hw_display_update(const chassis_status_t *status)
 
     memset(lines, 0, sizeof(lines));
 
-    hw_display_make_line(lines[0], "PID+POS");
+    hw_display_make_line(lines[0], "%s A2", hw_display_mode_name(status->mode));
     hw_display_make_line(lines[1], "Y:%+5.1f E:%+5.1f", status->pose_yaw_deg, status->yaw_error_deg);
-    hw_display_make_line(lines[2], "DXm:%+5.2f", status->position_edit_dx_m);
-    hw_display_make_line(lines[3], "DYm:%+5.2f", status->position_edit_dy_m);
-    hw_display_make_line(lines[4], "TXm:%+5.2f", status->target_x_m);
-    hw_display_make_line(lines[5], "TYm:%+5.2f", status->target_y_m);
+    hw_display_make_line(lines[2], "C:%+5.2f,%+5.2f", status->pose_meas_x_m, status->pose_meas_y_m);
+    hw_display_make_line(lines[3], "T:%+5.2f,%+5.2f", status->target_x_m, status->target_y_m);
+    hw_display_make_line(lines[4], "E:%+5.2f,%+5.2f", status->pos_error_x_m, status->pos_error_y_m);
+    hw_display_make_line(lines[5], "D:%+4.2f", status->distance_to_target_m);
 
     hw_display_make_wheel_lines(lines[6], lines[7], status, 0U);
     hw_display_make_wheel_lines(lines[8], lines[9], status, 1U);

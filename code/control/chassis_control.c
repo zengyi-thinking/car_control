@@ -4,7 +4,7 @@
  * 控制模式:
  * 1. SAFE_STOP: 电机停转
  * 2. MANUAL: LoRa 遥控摇杆直控 + IMU 锁头
- * 3. NAV: 0xA2 / 0xA1 导航输入 + 编码器里程计 + IMU 航向保持
+ * 3. NAV: 0xA2 导航目标点 + 编码器里程计 + IMU 航向保持
  ******************************************************************************/
 
 #include "control/chassis_control.h"
@@ -42,8 +42,6 @@
 
 #define CHASSIS_REMOTE_AXIS_MAX             1600.0f
 #define CHASSIS_REMOTE_DEADBAND             100.0f
-#define CHASSIS_REMOTE_YAW_HOLD_THRESHOLD   0.08f
-
 #define CHASSIS_MANUAL_AXIS_SNAP_MIN        0.18f
 #define CHASSIS_MANUAL_AXIS_SNAP_RATIO      0.35f
 
@@ -881,6 +879,7 @@ static void chassis_apply_pose_measurement(const proto_nav_data_t *nav)
 
     if ((nav == 0) || ((nav->flags & PROTO_NAV_FLAG_CURRENT_VALID) == 0U))
     {
+        g_status.pose_valid = 0U;
         return;
     }
 
@@ -938,6 +937,10 @@ static void chassis_update_target(const proto_nav_data_t *nav, float current_yaw
         g_status.target_x_m = 0.001f * (float)nav->target_x_mm;
         g_status.target_y_m = 0.001f * (float)nav->target_y_mm;
         g_status.target_valid = 1U;
+    }
+    else
+    {
+        g_status.target_valid = 0U;
     }
 
     if ((nav->flags & PROTO_NAV_FLAG_HEADING_VALID) != 0U)
@@ -1095,11 +1098,6 @@ void chassis_control_set_nav(const proto_nav_data_t *nav, uint8 fresh, uint16 ag
     if (nav != 0)
     {
         g_runtime.nav = *nav;
-        g_status.using_legacy_mode = (nav->mode == PROTO_NAV_MODE_LEGACY_ERROR) ? 1U : 0U;
-    }
-    else
-    {
-        g_status.using_legacy_mode = 0U;
     }
 
     g_status.nav_fresh = fresh ? 1U : 0U;
@@ -1220,7 +1218,16 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         g_runtime.last_mode = g_status.mode;
     }
 
-    chassis_position_move_update(&g_runtime.remote, yaw_deg, dt_s);
+    if ((g_status.mode == CHASSIS_MODE_NAV) && g_status.nav_fresh)
+    {
+        g_runtime.position_press_armed = 0U;
+        g_runtime.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
+        g_status.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
+    }
+    else
+    {
+        chassis_position_move_update(&g_runtime.remote, yaw_deg, dt_s);
+    }
     g_status.position_move_state = g_runtime.position_move_state;
     g_status.position_edit_dx_m = g_runtime.position_edit_dx_m;
     g_status.position_edit_dy_m = g_runtime.position_edit_dy_m;
@@ -1364,8 +1371,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
 
         case CHASSIS_MODE_NAV:
         {
-            if (g_status.nav_fresh && (g_runtime.nav.mode == PROTO_NAV_MODE_TARGET) &&
-                g_status.pose_valid && g_status.target_valid)
+            if (g_status.nav_fresh && g_status.pose_valid && g_status.target_valid)
             {
                 const uint8 arrived = chassis_run_position_control(yaw_deg,
                                                                    gyro_z_radps,
@@ -1386,17 +1392,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                     omega_cmd = 0.0f;
                     command_active = 0U;
                 }
-            }
-            else if (g_status.nav_fresh && (g_runtime.nav.mode == PROTO_NAV_MODE_LEGACY_ERROR))
-            {
-                vx_body_cmd = chassis_clamp(0.001f * (float)g_runtime.nav.err_fwd, -0.8f, 0.8f);
-                vy_body_cmd = chassis_clamp(-0.001f * (float)g_runtime.nav.err_lat, -0.8f, 0.8f);
-                chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
-                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
-                command_active = 1U;
-                g_status.pos_error_x_m = 0.0f;
-                g_status.pos_error_y_m = 0.0f;
-                g_status.distance_to_target_m = 0.0f;
             }
             else
             {
@@ -1488,7 +1483,8 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                         (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ||
                         ((g_status.mode == CHASSIS_MODE_NAV) &&
                          g_status.nav_fresh &&
-                         ((g_status.target_valid && g_status.pose_valid) || g_status.using_legacy_mode)));
+                         g_status.target_valid &&
+                         g_status.pose_valid));
 }
 
 const chassis_status_t *chassis_control_get_status(void)

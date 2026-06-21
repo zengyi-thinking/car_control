@@ -82,7 +82,6 @@ typedef struct
     uint8 target_valid;
     uint8 heading_valid;
     uint8 startup_lock_done;
-    uint8 using_legacy_mode;
     uint8 enabled;
     uint8 tune_active;
     uint8 tune_wheel_index;

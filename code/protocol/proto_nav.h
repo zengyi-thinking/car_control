@@ -6,10 +6,8 @@
 // ============================================
 // 协议定义
 // ============================================
-#define NAV_FRAME_HEAD_LEGACY          0xA1
-#define NAV_FRAME_HEAD_TARGET          0xA2
-#define NAV_FRAME_TAIL                 0x55
-#define NAV_FRAME_SIZE_LEGACY          8U
+#define NAV_FRAME_HEAD_TARGET          0xA2U
+#define NAV_FRAME_TAIL                 0x55U
 #define NAV_FRAME_SIZE_TARGET          14U
 #define NAV_FRAME_SIZE_MAX             NAV_FRAME_SIZE_TARGET
 
@@ -19,25 +17,10 @@
 #define PROTO_NAV_FLAG_HEADING_VALID   (1U << 2)
 #define PROTO_NAV_FLAG_HEADING_HOLD    (1U << 3)
 
-typedef enum
-{
-    PROTO_NAV_MODE_NONE = 0,
-    PROTO_NAV_MODE_LEGACY_ERROR = 1,
-    PROTO_NAV_MODE_TARGET = 2,
-} proto_nav_mode_t;
-
-// ============================================
-// 解析结果
-// ============================================
 typedef struct
 {
-    proto_nav_mode_t mode;
-
-    // legacy 0xA1
-    int16   err_fwd;
-    int16   err_lat;
-
-    // nav 0xA2, unit: mm / 0.1 deg
+    // A2 场地坐标, 单位: mm / 0.1 deg
+    // 约定: +X = 左, +Y = 前
     int16   current_x_mm;
     int16   current_y_mm;
     int16   target_x_mm;

@@ -1,5 +1,6 @@
 #include "hw_imu.h"
 #include "hw_icm45686.h"
+#include "zf_device_imu660rb.h"
 #include "../hw_config.h"
 
 #include <math.h>
@@ -69,6 +70,57 @@ static flight_attitude_t g_local_attitude;
 static flight_world_accel_t g_local_world_accel;
 
 static unsigned char g_imu_ready = 0U;
+
+#if (HW_IMU_MODEL != HW_IMU_MODEL_ICM45686) && (HW_IMU_MODEL != HW_IMU_MODEL_IMU660RB)
+#error "Unsupported HW_IMU_MODEL value."
+#endif
+
+static unsigned char hw_imu_backend_init(void)
+{
+#if (HW_IMU_MODEL == HW_IMU_MODEL_IMU660RB)
+    return (imu660rb_init() == 0U) ? 1U : 0U;
+#else
+    hw_icm45686_init();
+    return (unsigned char)hw_icm45686_ready();
+#endif
+}
+
+static unsigned char hw_imu_backend_read(float accel_g[3], float gyro_dps[3])
+{
+    if((accel_g == 0) || (gyro_dps == 0))
+    {
+        return 0U;
+    }
+
+    if(!g_imu_ready)
+    {
+        return 0U;
+    }
+
+#if (HW_IMU_MODEL == HW_IMU_MODEL_IMU660RB)
+    imu660rb_get_acc();
+    imu660rb_get_gyro();
+    accel_g[0] = HW_IMU660RB_ACC_X_SIGN * imu660rb_acc_transition(imu660rb_acc_x);
+    accel_g[1] = HW_IMU660RB_ACC_Y_SIGN * imu660rb_acc_transition(imu660rb_acc_y);
+    accel_g[2] = HW_IMU660RB_ACC_Z_SIGN * imu660rb_acc_transition(imu660rb_acc_z);
+    gyro_dps[0] = HW_IMU660RB_GYRO_X_SIGN * imu660rb_gyro_transition(imu660rb_gyro_x);
+    gyro_dps[1] = HW_IMU660RB_GYRO_Y_SIGN * imu660rb_gyro_transition(imu660rb_gyro_y);
+    gyro_dps[2] = HW_IMU660RB_GYRO_Z_SIGN * imu660rb_gyro_transition(imu660rb_gyro_z);
+    return 1U;
+#else
+    const flight_imu_raw_t *imu_raw;
+
+    hw_icm45686_update();
+    imu_raw = hw_icm45686_get_local_raw();
+    if((imu_raw == 0) || (imu_raw->valid == 0U))
+    {
+        return 0U;
+    }
+
+    hw_icm45686_read_float(accel_g, gyro_dps);
+    return 1U;
+#endif
+}
 
 static float hw_biquad_update(hw_biquad_t *filter, float input)
 {
@@ -353,8 +405,6 @@ void hw_imu_init(void)
 {
     unsigned short axis;
 
-    hw_icm45686_init();
-
     for(axis = 0U; axis < 3U; axis++)
     {
         hw_biquad_init(&g_acc_filter[axis], g_acc_b0, g_acc_b1, g_acc_b2, g_acc_a1, g_acc_a2);
@@ -365,7 +415,7 @@ void hw_imu_init(void)
     hw_imu_reset_bias_state();
     g_ahrs_kp = HW_IMU_AHRS_KP_DEFAULT;
     g_ahrs_ki = HW_IMU_AHRS_KI_DEFAULT;
-    g_imu_ready = (unsigned char)hw_icm45686_ready();
+    g_imu_ready = hw_imu_backend_init();
 }
 
 void hw_imu_set_ahrs_gains(float kp, float ki)
@@ -381,24 +431,14 @@ void hw_imu_update(void)
     float accel_raw[3];
     float gyro_raw[3];
     float gyro_corr[3];
-    const flight_imu_raw_t *imu_raw;
     unsigned short axis;
 
-    if(!g_imu_ready)
-    {
-        return;
-    }
-
-    hw_icm45686_update();
-    imu_raw = hw_icm45686_get_local_raw();
-    if((imu_raw == 0) || (imu_raw->valid == 0U))
+    if(!hw_imu_backend_read(accel_raw, gyro_raw))
     {
         g_local_attitude.valid = 0U;
         g_local_world_accel.valid = 0U;
         return;
     }
-
-    hw_icm45686_read_float(accel_raw, gyro_raw);
 
     for(axis = 0U; axis < 3U; axis++)
     {
@@ -423,7 +463,7 @@ void hw_imu_update(void)
 
 void hw_imu_irq_callback(void)
 {
-    hw_icm45686_irq_callback();
+    /* Both backends are polled in hw_imu_update() right now. */
 }
 
 void hw_imu_read_attitude(flight_attitude_t *attitude)

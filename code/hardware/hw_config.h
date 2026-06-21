@@ -39,4 +39,27 @@
 #define HW_MOTOR_FF_KS_DUTY                   220.0f
 #define HW_MOTOR_FF_KV_DUTY_PER_MPS           1200.0f
 
+/* =========================
+ * IMU backend selection
+ * ========================= */
+#define HW_IMU_MODEL_ICM45686                 0U
+#define HW_IMU_MODEL_IMU660RB                 1U
+
+/* Default to the new SPI IMU backend, keep the old one as a fallback. */
+#ifndef HW_IMU_MODEL
+#define HW_IMU_MODEL                          HW_IMU_MODEL_IMU660RB
+#endif
+
+/*
+ * RB axis remap defaults.
+ * Keep these as compile-time knobs so we can correct installation orientation
+ * without touching AHRS or chassis code.
+ */
+#define HW_IMU660RB_ACC_X_SIGN                (1.0f)
+#define HW_IMU660RB_ACC_Y_SIGN                (1.0f)
+#define HW_IMU660RB_ACC_Z_SIGN                (1.0f)
+#define HW_IMU660RB_GYRO_X_SIGN               (1.0f)
+#define HW_IMU660RB_GYRO_Y_SIGN               (1.0f)
+#define HW_IMU660RB_GYRO_Z_SIGN               (1.0f)
+
 #endif
