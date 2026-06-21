@@ -56,6 +56,7 @@ typedef struct
     float cmd_omega_radps;
     float yaw_error_deg;
     float gyro_z_bias_radps;
+    float gyro_z_motion_trim_radps;
     float startup_lock_elapsed_s;
     float joy_x_norm;
     float joy_y_norm;

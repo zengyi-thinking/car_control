@@ -62,4 +62,24 @@
 #define HW_IMU660RB_GYRO_Y_SIGN               (1.0f)
 #define HW_IMU660RB_GYRO_Z_SIGN               (1.0f)
 
+/* =========================
+ * IMU drift suppression
+ * ========================= */
+#define HW_IMU_STATIONARY_GYRO_DPS_THRESHOLD   (1.20f)
+#define HW_IMU_STATIONARY_ACC_DEV_G_THRESHOLD  (0.10f)
+#define HW_IMU_STATIONARY_DWELL_S              (0.60f)
+
+#define HW_IMU_ACC_WEIGHT_FULL_DEV_G           (0.06f)
+#define HW_IMU_ACC_WEIGHT_MIN_DEV_G            (0.25f)
+#define HW_IMU_ACC_WEIGHT_MIN                  (0.25f)
+
+/* During straight translation, let the IMU keep trimming tiny z-rate bias
+ * using encoder/odometry confirmation that the chassis is not actually turning.
+ */
+#define HW_IMU_MOTION_TRIM_TRANSLATION_MPS     (0.08f)
+#define HW_IMU_MOTION_TRIM_OMEGA_RADPS         (0.05f)
+#define HW_IMU_MOTION_TRIM_RATE_DEADBAND_DPS   (0.03f)
+#define HW_IMU_MOTION_TRIM_GAIN                (0.25f)
+#define HW_IMU_MOTION_TRIM_LIMIT_DPS           (0.40f)
+
 #endif

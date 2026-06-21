@@ -49,12 +49,18 @@ static hw_biquad_t g_gyro_filter[3];
 static float g_filtered_acc_g[3];
 static float g_filtered_gyro_dps[3];
 static float g_gyro_bias_dps[3];
+static float g_gyro_z_trim_dps = 0.0f;
 static float g_gyro_window[3][HW_IMU_GYRO_WINDOW];
 static float g_gyro_sum[3];
 static float g_gyro_sum_sq[3];
 static unsigned short g_gyro_window_count = 0U;
 static unsigned short g_gyro_window_head = 0U;
 static unsigned short g_gyro_cal_count = 0U;
+volatile uint8 g_hw_imu_stationary_hint = 0U;
+volatile uint8 g_hw_imu_stationary_confirmed = 0U;
+volatile float g_hw_imu_stationary_elapsed_s = 0.0f;
+volatile float g_hw_imu_acc_norm_g = 1.0f;
+volatile float g_hw_imu_acc_weight = 1.0f;
 
 static float g_q0 = 1.0f;
 static float g_q1 = 0.0f;
@@ -151,6 +157,36 @@ static void hw_biquad_init(hw_biquad_t *filter, float b0, float b1, float b2, fl
     filter->y2 = 0.0f;
 }
 
+static void hw_imu_reset_bias_window(void)
+{
+    memset(g_gyro_window, 0, sizeof(g_gyro_window));
+    memset(g_gyro_sum, 0, sizeof(g_gyro_sum));
+    memset(g_gyro_sum_sq, 0, sizeof(g_gyro_sum_sq));
+    g_gyro_window_count = 0U;
+    g_gyro_window_head = 0U;
+    g_gyro_cal_count = 0U;
+}
+
+static float hw_imu_compute_acc_weight(float acc_dev_g)
+{
+    float weight;
+
+    if (acc_dev_g <= HW_IMU_ACC_WEIGHT_FULL_DEV_G)
+    {
+        return 1.0f;
+    }
+
+    if (acc_dev_g >= HW_IMU_ACC_WEIGHT_MIN_DEV_G)
+    {
+        return HW_IMU_ACC_WEIGHT_MIN;
+    }
+
+    weight = 1.0f - ((acc_dev_g - HW_IMU_ACC_WEIGHT_FULL_DEV_G) /
+                     (HW_IMU_ACC_WEIGHT_MIN_DEV_G - HW_IMU_ACC_WEIGHT_FULL_DEV_G)) *
+                    (1.0f - HW_IMU_ACC_WEIGHT_MIN);
+    return weight;
+}
+
 static float hw_imu_inv_sqrt(float value)
 {
     if(value <= 0.0f)
@@ -189,18 +225,26 @@ static void hw_imu_reset_outputs(void)
 
 static void hw_imu_reset_bias_state(void)
 {
-    memset(g_gyro_window, 0, sizeof(g_gyro_window));
-    memset(g_gyro_sum, 0, sizeof(g_gyro_sum));
-    memset(g_gyro_sum_sq, 0, sizeof(g_gyro_sum_sq));
-    g_gyro_window_count = 0U;
-    g_gyro_window_head = 0U;
-    g_gyro_cal_count = 0U;
+    hw_imu_reset_bias_window();
     g_gyro_bias_dps[0] = 0.0f;
     g_gyro_bias_dps[1] = 0.0f;
     g_gyro_bias_dps[2] = 0.0f;
     g_ex_int = 0.0f;
     g_ey_int = 0.0f;
     g_ez_int = 0.0f;
+}
+
+void hw_imu_set_stationary_hint(uint8 stationary)
+{
+    __disable_irq();
+    g_hw_imu_stationary_hint = (stationary != 0U) ? 1U : 0U;
+    if (g_hw_imu_stationary_hint == 0U)
+    {
+        g_hw_imu_stationary_confirmed = 0U;
+        g_hw_imu_stationary_elapsed_s = 0.0f;
+        hw_imu_reset_bias_window();
+    }
+    __enable_irq();
 }
 
 static void hw_imu_update_bias(const float gyro_dps[3])
@@ -266,12 +310,66 @@ static void hw_imu_update_bias(const float gyro_dps[3])
     }
 }
 
+static uint8 hw_imu_update_stationary_gate(const float accel_g[3], const float gyro_dps[3], float dt_s)
+{
+    float acc_norm_sq;
+    float gyro_norm_sq;
+    float acc_norm_g;
+    float gyro_norm_dps;
+    float acc_dev_g;
+    uint8 candidate;
+
+    if ((accel_g == 0) || (gyro_dps == 0) || (dt_s <= 0.0f))
+    {
+        g_hw_imu_stationary_confirmed = 0U;
+        g_hw_imu_stationary_elapsed_s = 0.0f;
+        return 0U;
+    }
+
+    acc_norm_sq = (accel_g[0] * accel_g[0]) +
+                  (accel_g[1] * accel_g[1]) +
+                  (accel_g[2] * accel_g[2]);
+    gyro_norm_sq = (gyro_dps[0] * gyro_dps[0]) +
+                   (gyro_dps[1] * gyro_dps[1]) +
+                   (gyro_dps[2] * gyro_dps[2]);
+
+    acc_norm_g = (acc_norm_sq > 0.0f) ? sqrtf(acc_norm_sq) : 0.0f;
+    gyro_norm_dps = (gyro_norm_sq > 0.0f) ? sqrtf(gyro_norm_sq) : 0.0f;
+    acc_dev_g = fabsf(acc_norm_g - 1.0f);
+
+    g_hw_imu_acc_norm_g = acc_norm_g;
+    g_hw_imu_acc_weight = hw_imu_compute_acc_weight(acc_dev_g);
+
+    candidate = (g_hw_imu_stationary_hint != 0U) &&
+                (gyro_norm_dps <= HW_IMU_STATIONARY_GYRO_DPS_THRESHOLD) &&
+                (acc_dev_g <= HW_IMU_STATIONARY_ACC_DEV_G_THRESHOLD);
+    if (!candidate)
+    {
+        g_hw_imu_stationary_confirmed = 0U;
+        g_hw_imu_stationary_elapsed_s = 0.0f;
+        hw_imu_reset_bias_window();
+        return 0U;
+    }
+
+    g_hw_imu_stationary_elapsed_s += dt_s;
+    if (g_hw_imu_stationary_elapsed_s >= HW_IMU_STATIONARY_DWELL_S)
+    {
+        g_hw_imu_stationary_confirmed = 1U;
+        return 1U;
+    }
+
+    g_hw_imu_stationary_confirmed = 0U;
+    return 0U;
+}
+
 static void hw_imu_update_ahrs(float gx,
                                float gy,
                                float gz,
                                float ax,
                                float ay,
-                               float az)
+                               float az,
+                               float kp,
+                               float ki)
 {
     float acc_norm;
     float q0q0;
@@ -320,13 +418,13 @@ static void hw_imu_update_ahrs(float gx,
 
     if((ex != 0.0f) || (ey != 0.0f) || (ez != 0.0f))
     {
-        g_ex_int += ex * g_ahrs_ki * (0.5f * HW_IMU_DT_S);
-        g_ey_int += ey * g_ahrs_ki * (0.5f * HW_IMU_DT_S);
-        g_ez_int += ez * g_ahrs_ki * (0.5f * HW_IMU_DT_S);
+        g_ex_int += ex * ki * (0.5f * HW_IMU_DT_S);
+        g_ey_int += ey * ki * (0.5f * HW_IMU_DT_S);
+        g_ez_int += ez * ki * (0.5f * HW_IMU_DT_S);
 
-        gx += g_ahrs_kp * ex + g_ex_int;
-        gy += g_ahrs_kp * ey + g_ey_int;
-        gz += g_ahrs_kp * ez + g_ez_int;
+        gx += kp * ex + g_ex_int;
+        gy += kp * ey + g_ey_int;
+        gz += kp * ez + g_ez_int;
     }
 
     half_dt = 0.5f * HW_IMU_DT_S;
@@ -415,6 +513,12 @@ void hw_imu_init(void)
     hw_imu_reset_bias_state();
     g_ahrs_kp = HW_IMU_AHRS_KP_DEFAULT;
     g_ahrs_ki = HW_IMU_AHRS_KI_DEFAULT;
+    g_hw_imu_stationary_hint = 1U;
+    g_hw_imu_stationary_confirmed = 0U;
+    g_hw_imu_stationary_elapsed_s = 0.0f;
+    g_hw_imu_acc_norm_g = 1.0f;
+    g_hw_imu_acc_weight = 1.0f;
+    g_gyro_z_trim_dps = 0.0f;
     g_imu_ready = hw_imu_backend_init();
 }
 
@@ -426,17 +530,28 @@ void hw_imu_set_ahrs_gains(float kp, float ki)
     __enable_irq();
 }
 
+void hw_imu_set_gyro_z_trim(float trim_dps)
+{
+    __disable_irq();
+    g_gyro_z_trim_dps = trim_dps;
+    __enable_irq();
+}
+
 void hw_imu_update(void)
 {
     float accel_raw[3];
     float gyro_raw[3];
     float gyro_corr[3];
+    float kp_eff;
+    float ki_eff;
     unsigned short axis;
+    uint8 stationary_confirmed;
 
     if(!hw_imu_backend_read(accel_raw, gyro_raw))
     {
         g_local_attitude.valid = 0U;
         g_local_world_accel.valid = 0U;
+        g_hw_imu_stationary_confirmed = 0U;
         return;
     }
 
@@ -446,17 +561,27 @@ void hw_imu_update(void)
         g_filtered_gyro_dps[axis] = hw_biquad_update(&g_gyro_filter[axis], gyro_raw[axis]);
     }
 
-    hw_imu_update_bias(g_filtered_gyro_dps);
+    stationary_confirmed = hw_imu_update_stationary_gate(g_filtered_acc_g,
+                                                         g_filtered_gyro_dps,
+                                                         HW_IMU_DT_S);
+    if (stationary_confirmed != 0U)
+    {
+        hw_imu_update_bias(g_filtered_gyro_dps);
+    }
 
     gyro_corr[0] = (g_filtered_gyro_dps[0] - g_gyro_bias_dps[0]) * ((float)M_PI / 180.0f);
     gyro_corr[1] = (g_filtered_gyro_dps[1] - g_gyro_bias_dps[1]) * ((float)M_PI / 180.0f);
-    gyro_corr[2] = (g_filtered_gyro_dps[2] - g_gyro_bias_dps[2]) * ((float)M_PI / 180.0f);
+    gyro_corr[2] = (g_filtered_gyro_dps[2] - g_gyro_bias_dps[2] - g_gyro_z_trim_dps) * ((float)M_PI / 180.0f);
+    kp_eff = g_ahrs_kp * g_hw_imu_acc_weight;
+    ki_eff = g_ahrs_ki * g_hw_imu_acc_weight;
     hw_imu_update_ahrs(gyro_corr[0],
                        gyro_corr[1],
                        gyro_corr[2],
                        g_filtered_acc_g[0],
                        g_filtered_acc_g[1],
-                       g_filtered_acc_g[2]);
+                       g_filtered_acc_g[2],
+                       kp_eff,
+                       ki_eff);
 
     hw_imu_refresh_attitude_and_world_accel();
 }
@@ -500,7 +625,7 @@ void hw_imu_read_float(float accel_g[3], float gyro_dps[3])
     {
         gyro_dps[0] = g_filtered_gyro_dps[0] - g_gyro_bias_dps[0];
         gyro_dps[1] = g_filtered_gyro_dps[1] - g_gyro_bias_dps[1];
-        gyro_dps[2] = g_filtered_gyro_dps[2] - g_gyro_bias_dps[2];
+        gyro_dps[2] = g_filtered_gyro_dps[2] - g_gyro_bias_dps[2] - g_gyro_z_trim_dps;
     }
     __enable_irq();
 }
