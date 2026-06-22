@@ -4,7 +4,7 @@
  * 控制模式:
  * 1. SAFE_STOP: 电机停转
  * 2. MANUAL: LoRa 遥控摇杆直控 + IMU 锁头
- * 3. NAV: 0xA2 导航目标点 + 编码器里程计 + IMU 航向保持
+ * 3. DRONE_TRACK: 0xA4 无人机像素误差 + 车体系速度控制 + IMU 锁头
  ******************************************************************************/
 
 #include "control/chassis_control.h"
@@ -20,10 +20,6 @@
 #define CHASSIS_PI                          3.14159265358979323846f
 #define CHASSIS_DEG_TO_RAD                  (CHASSIS_PI / 180.0f)
 #define CHASSIS_RAD_TO_DEG                  (180.0f / CHASSIS_PI)
-
-#define CHASSIS_POSE_BLEND_ALPHA            0.35f
-#define CHASSIS_POSE_CORR_MAX_STEP_M        0.20f
-#define CHASSIS_POSE_JUMP_REJECT_M          1.20f
 
 #define CHASSIS_POS_KP                      1.8f
 #define CHASSIS_VEL_DAMP_K                  0.55f
@@ -96,7 +92,7 @@ static const float s_wheel_ff_ks_duty[4] =
 typedef struct
 {
     proto_remote_data_t remote;
-    proto_nav_data_t nav;
+    proto_drone_data_t drone;
     odometry_state_t odom;
     chassis_mode_t last_mode;
     uint8 yaw_lock_valid;
@@ -150,7 +146,6 @@ static float chassis_clamp(float value, float min_value, float max_value)
 }
 
 static float chassis_wrap_deg(float deg);
-static float chassis_make_continuous_target(float target_deg, float current_continuous_deg);
 
 /*
  * 坐标约定:
@@ -585,13 +580,6 @@ static float chassis_wrap_deg(float deg)
     return deg;
 }
 
-static float chassis_make_continuous_target(float target_deg, float current_continuous_deg)
-{
-    const float current_wrapped = chassis_wrap_deg(current_continuous_deg);
-
-    return current_continuous_deg + chassis_wrap_deg(target_deg - current_wrapped);
-}
-
 static float chassis_move_toward(float current, float target, float max_step)
 {
     if (target > (current + max_step))
@@ -661,6 +649,18 @@ static uint8 chassis_remote_button_pressed(const proto_remote_data_t *remote, ui
     }
 
     return 0U;
+}
+
+static float chassis_drone_error_to_norm(int16 err_px)
+{
+    /* Bang-bang: return full-speed sign (+1 / -1) once outside the deadband,
+     * zero inside. No proportional scaling; max speed is set by the caller. */
+    if(fabsf((float)err_px) <= HW_DRONE_DEADBAND_PX)
+    {
+        return 0.0f;
+    }
+
+    return (err_px > 0) ? 1.0f : -1.0f;
 }
 
 static void chassis_position_move_reset(void)
@@ -740,6 +740,9 @@ static void chassis_apply_body_command_slew(float *vx_body_cmd, float *vy_body_c
     *vy_body_cmd = g_runtime.cmd_vy_body_state;
 }
 
+/* Right-stick position-edit workflow. In DRONE_TRACK mode this function is
+ * skipped entirely (see the mode gate above), so the right stick is retired
+ * from automatic control. Kept for MANUAL mode parity and future use. */
 static void chassis_position_move_update(const proto_remote_data_t *remote, float yaw_deg, float dt_s)
 {
     float right_x;
@@ -966,104 +969,6 @@ static void chassis_manual_snap_axes(float *joy_x, float *joy_y)
     }
 }
 
-static void chassis_apply_pose_measurement(const proto_nav_data_t *nav)
-{
-    float meas_x_m;
-    float meas_y_m;
-    float dx;
-    float dy;
-    float innovation_norm;
-    float corr_x;
-    float corr_y;
-    float corr_norm;
-    float corr_scale;
-
-    if ((nav == 0) || ((nav->flags & PROTO_NAV_FLAG_CURRENT_VALID) == 0U))
-    {
-        g_status.pose_valid = 0U;
-        return;
-    }
-
-    meas_x_m = 0.001f * (float)nav->current_x_mm;
-    meas_y_m = 0.001f * (float)nav->current_y_mm;
-    g_status.pose_meas_x_m = meas_x_m;
-    g_status.pose_meas_y_m = meas_y_m;
-
-    if (!g_status.pose_valid)
-    {
-        g_status.pose_x_m = meas_x_m;
-        g_status.pose_y_m = meas_y_m;
-        g_status.pose_valid = 1U;
-        return;
-    }
-
-    dx = meas_x_m - g_status.pose_x_m;
-    dy = meas_y_m - g_status.pose_y_m;
-    innovation_norm = sqrtf(dx * dx + dy * dy);
-
-    if (innovation_norm > CHASSIS_POSE_JUMP_REJECT_M)
-    {
-        if (!g_status.nav_fresh)
-        {
-            g_status.pose_x_m = meas_x_m;
-            g_status.pose_y_m = meas_y_m;
-        }
-        return;
-    }
-
-    corr_x = CHASSIS_POSE_BLEND_ALPHA * dx;
-    corr_y = CHASSIS_POSE_BLEND_ALPHA * dy;
-    corr_norm = sqrtf(corr_x * corr_x + corr_y * corr_y);
-
-    if (corr_norm > CHASSIS_POSE_CORR_MAX_STEP_M)
-    {
-        corr_scale = CHASSIS_POSE_CORR_MAX_STEP_M / corr_norm;
-        corr_x *= corr_scale;
-        corr_y *= corr_scale;
-    }
-
-    g_status.pose_x_m += corr_x;
-    g_status.pose_y_m += corr_y;
-}
-
-static void chassis_update_target(const proto_nav_data_t *nav, float current_yaw_deg)
-{
-    if (nav == 0)
-    {
-        return;
-    }
-
-    if ((nav->flags & PROTO_NAV_FLAG_TARGET_VALID) != 0U)
-    {
-        g_status.target_x_m = 0.001f * (float)nav->target_x_mm;
-        g_status.target_y_m = 0.001f * (float)nav->target_y_mm;
-        g_status.target_valid = 1U;
-    }
-    else
-    {
-        g_status.target_valid = 0U;
-    }
-
-    if ((nav->flags & PROTO_NAV_FLAG_HEADING_VALID) != 0U)
-    {
-        g_runtime.yaw_lock_continuous_deg = chassis_make_continuous_target(0.1f * (float)nav->heading_deg_x10,
-                                                                          current_yaw_deg);
-        g_runtime.yaw_lock_deg = chassis_wrap_deg(g_runtime.yaw_lock_continuous_deg);
-        g_runtime.yaw_lock_valid = 1U;
-        g_runtime.heading_integral = 0.0f;
-        g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
-        g_status.heading_valid = 1U;
-    }
-    else if (!g_runtime.yaw_lock_valid)
-    {
-        g_runtime.yaw_lock_continuous_deg = current_yaw_deg;
-        g_runtime.yaw_lock_deg = chassis_wrap_deg(g_runtime.yaw_lock_continuous_deg);
-        g_runtime.yaw_lock_valid = 1U;
-        g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
-        g_status.heading_valid = 1U;
-    }
-}
-
 static uint8 chassis_run_position_control(float yaw_deg,
                                           float gyro_z_radps,
                                           float dt_s,
@@ -1209,15 +1114,20 @@ void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, 
     g_status.remote_age_ms = age_ms;
 }
 
-void chassis_control_set_nav(const proto_nav_data_t *nav, uint8 fresh, uint16 age_ms)
+void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms)
 {
-    if (nav != 0)
+    if (drone != 0)
     {
-        g_runtime.nav = *nav;
+        g_runtime.drone = *drone;
     }
 
-    g_status.nav_fresh = fresh ? 1U : 0U;
-    g_status.nav_age_ms = age_ms;
+    g_status.drone_fresh = fresh ? 1U : 0U;
+    g_status.drone_age_ms = age_ms;
+    g_status.drone_flags = g_runtime.drone.flags;
+    g_status.drone_move_valid = ((fresh != 0U) &&
+                                 ((g_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U)) ? 1U : 0U;
+    g_status.drone_err_fwd_px = g_runtime.drone.err_fwd_px;
+    g_status.drone_err_right_px = g_runtime.drone.err_right_px;
 }
 
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude)
@@ -1314,12 +1224,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         }
     }
 
-    if (g_status.nav_fresh && (g_status.mode == CHASSIS_MODE_NAV))
-    {
-        chassis_apply_pose_measurement(&g_runtime.nav);
-        chassis_update_target(&g_runtime.nav, yaw_deg);
-    }
-
     if (g_status.mode != g_runtime.last_mode)
     {
         if (g_status.mode == CHASSIS_MODE_SAFE_STOP)
@@ -1335,7 +1239,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         {
             chassis_seed_command_states_from_odometry();
         }
-        else if (g_status.mode == CHASSIS_MODE_NAV)
+        else if (g_status.mode == CHASSIS_MODE_DRONE_TRACK)
         {
             chassis_seed_command_states_from_odometry();
             if (!g_runtime.yaw_lock_valid)
@@ -1351,7 +1255,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         g_runtime.last_mode = g_status.mode;
     }
 
-    if ((g_status.mode == CHASSIS_MODE_NAV) && g_status.nav_fresh)
+    if (g_status.mode == CHASSIS_MODE_DRONE_TRACK)
     {
         g_runtime.position_press_armed = 0U;
         g_runtime.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
@@ -1510,34 +1414,20 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             }
         } break;
 
-        case CHASSIS_MODE_NAV:
+        case CHASSIS_MODE_DRONE_TRACK:
         {
-            if (g_status.nav_fresh && g_status.pose_valid && g_status.target_valid)
+            if (g_status.drone_move_valid != 0U)
             {
-                const uint8 arrived = chassis_run_position_control(yaw_deg,
-                                                                   gyro_z_radps,
-                                                                   dt_s,
-                                                                   &vx_field_cmd,
-                                                                   &vy_field_cmd,
-                                                                   &vx_body_cmd,
-                                                                   &vy_body_cmd,
-                                                                   &omega_cmd);
+                const float fwd_norm = chassis_drone_error_to_norm(g_runtime.drone.err_fwd_px);
+                const float right_norm = chassis_drone_error_to_norm(g_runtime.drone.err_right_px);
+
+                vx_body_cmd = HW_DRONE_FWD_SIGN * fwd_norm * HW_DRONE_MAX_FWD_MPS;
+                vy_body_cmd = HW_DRONE_RIGHT_SIGN * right_norm * HW_DRONE_MAX_RIGHT_MPS;
+                chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
+                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
                 command_active = 1U;
-                if (arrived != 0U)
-                {
-                    chassis_position_move_abort();
-                    vx_field_cmd = 0.0f;
-                    vy_field_cmd = 0.0f;
-                    vx_body_cmd = 0.0f;
-                    vy_body_cmd = 0.0f;
-                    omega_cmd = 0.0f;
-                    command_active = 0U;
-                }
-            }
-            else
-            {
-                g_runtime.cmd_vx_field_state = 0.0f;
-                g_runtime.cmd_vy_field_state = 0.0f;
+                g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+                g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
             }
         } break;
 
@@ -1585,8 +1475,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
 
             g_status.wheel_target_mps[i] = wheel_target_mps[i];
 
-            duty_limit = ((g_status.mode == CHASSIS_MODE_NAV) ||
-                          (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN)) ?
+            duty_limit = (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ?
                          (float)HW_MOTOR_DUTY_MAX :
                          (float)HW_MANUAL_MAX_DUTY;
             duty_ff = chassis_feedforward_duty(i, wheel_target_mps[i]);
@@ -1621,12 +1510,11 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
     g_status.enabled = (g_runtime.startup_lock_done != 0U) &&
                        (((g_status.mode == CHASSIS_MODE_MANUAL) && g_status.remote_fresh) ||
-                        ((g_status.mode == CHASSIS_MODE_WHEEL_TUNE) && command_active) ||
+                       ((g_status.mode == CHASSIS_MODE_WHEEL_TUNE) && command_active) ||
                         (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ||
-                        ((g_status.mode == CHASSIS_MODE_NAV) &&
-                         g_status.nav_fresh &&
-                         g_status.target_valid &&
-                         g_status.pose_valid));
+                        ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
+                         g_status.drone_fresh &&
+                         g_status.drone_move_valid));
 
     hw_imu_set_stationary_hint(chassis_stationary_hint_from_status());
 }

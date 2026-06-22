@@ -1269,10 +1269,10 @@
         <group>
             <name>protocol</name>
             <file>
-                <name>$PROJ_DIR$\..\..\code\protocol\proto_nav.c</name>
+                <name>$PROJ_DIR$\..\..\code\protocol\proto_drone.c</name>
             </file>
             <file>
-                <name>$PROJ_DIR$\..\..\code\protocol\proto_nav.h</name>
+                <name>$PROJ_DIR$\..\..\code\protocol\proto_drone.h</name>
             </file>
             <file>
                 <name>$PROJ_DIR$\..\..\code\protocol\proto_remote.c</name>

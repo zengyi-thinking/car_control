@@ -3,7 +3,7 @@
 
 #include "hardware/sensors/hw_imu.h"
 #include "control/pid.h"
-#include "protocol/proto_nav.h"
+#include "protocol/proto_drone.h"
 #include "protocol/proto_remote.h"
 #include "zf_common_typedef.h"
 
@@ -11,8 +11,8 @@ typedef enum
 {
     CHASSIS_MODE_SAFE_STOP = 0,
     CHASSIS_MODE_MANUAL = 1,
-    CHASSIS_MODE_NAV = 2,
     CHASSIS_MODE_WHEEL_TUNE = 3,
+    CHASSIS_MODE_DRONE_TRACK = 4,
 } chassis_mode_t;
 
 typedef enum
@@ -76,9 +76,10 @@ typedef struct
     int16 encoder_counts[4];
 
     uint16 remote_age_ms;
-    uint16 nav_age_ms;
+    uint16 drone_age_ms;
     uint8 remote_fresh;
-    uint8 nav_fresh;
+    uint8 drone_fresh;
+    uint8 drone_move_valid;
     uint8 pose_valid;
     uint8 target_valid;
     uint8 heading_valid;
@@ -91,6 +92,9 @@ typedef struct
     float tune_target_mps;
     float tune_selected_value;
     float tune_selected_step;
+    int16 drone_err_fwd_px;
+    int16 drone_err_right_px;
+    uint8 drone_flags;
 } chassis_status_t;
 
 extern volatile uint8 g_chassis_wheel_pid_tune_enabled;
@@ -103,7 +107,7 @@ void chassis_control_init(void);
 void chassis_control_reset(void);
 void chassis_control_set_mode(chassis_mode_t mode);
 void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, uint16 age_ms);
-void chassis_control_set_nav(const proto_nav_data_t *nav, uint8 fresh, uint16 age_ms);
+void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms);
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude);
 const chassis_status_t *chassis_control_get_status(void);
 void chassis_control_get_motor_duty(int16 duty_out[4]);

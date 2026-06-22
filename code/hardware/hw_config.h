@@ -9,7 +9,7 @@
 #define HW_MOTOR_DUTY_MAX                     10000
 
 #define HW_REMOTE_TIMEOUT_MS                  150U
-#define HW_NAV_TIMEOUT_MS                     120U
+#define HW_DRONE_TIMEOUT_MS                   150U
 
 #define HW_ENCODER_DISPLAY_DEADBAND           3
 
@@ -25,6 +25,16 @@
 #define HW_MANUAL_MAX_LINEAR_SPEED_MPS        0.80f
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       0.95f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
+
+#define HW_DRONE_DEADBAND_PX                  12.0f
+#define HW_DRONE_PX_NORM                      160.0f
+#define HW_DRONE_MAX_FWD_MPS                  0.80f
+#define HW_DRONE_MAX_RIGHT_MPS                0.80f
+#define HW_DRONE_FWD_SIGN                     (1.0f)
+/* beacon_rel_lat defined as positive = beacon on car LEFT side, but mecanum
+ * vy_body positive = move RIGHT, so the right axis must be inverted. */
+#define HW_DRONE_RIGHT_SIGN                   (-1.0f)
+#define HW_DRONE_REMOTE_OVERRIDE_RAW          260
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
 #define HW_WHEEL_TUNE_KP_STEP                 10.0f

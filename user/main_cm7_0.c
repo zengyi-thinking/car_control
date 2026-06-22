@@ -24,16 +24,14 @@ int main(void)
         {
             debug_div = 0U;
             status = app_car_get_status();
-            printf("[CAR] mode:%u remote:%u nav:%u pose:(%.2f,%.2f,%.1f) target:(%.2f,%.2f,%.1f) cmd:(%.2f,%.2f,%.2f)\r\n",
+            printf("[CAR] mode:%u remote:%u drone:%u move:%u pose:(%.2f,%.2f,%.1f) cmd:(%.2f,%.2f,%.2f)\r\n",
                    (uint8)status->mode,
                    status->remote_fresh,
-                   status->nav_fresh,
+                   status->drone_fresh,
+                   status->drone_move_valid,
                    status->pose_x_m,
                    status->pose_y_m,
                    status->pose_yaw_deg,
-                   status->target_x_m,
-                   status->target_y_m,
-                   status->target_yaw_deg,
                    status->cmd_vx_body_mps,
                    status->cmd_vy_body_mps,
                    status->cmd_omega_radps);

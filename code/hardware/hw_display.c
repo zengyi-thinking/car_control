@@ -11,24 +11,12 @@
 #define DISPLAY_TEXT_COLS            18U
 #define DISPLAY_LINE_BUF_LEN         32U
 #define DISPLAY_REFRESH_TICKS        10U
-#define DISPLAY_USED_LINE_COUNT      14U   /* 实际使用的行数（行0标题 + 行1-5状态 + 行6-13轮组） */
+#define DISPLAY_USED_LINE_COUNT      6U
 
 static uint8 g_display_ready = 0U;
 static uint8 g_display_tick = 0U;
 static uint8 g_layout_drawn = 0U;
 static char g_last_lines[DISPLAY_USED_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
-
-static const char *hw_display_wheel_name(uint8 wheel_index)
-{
-    switch (wheel_index)
-    {
-        case 0U: return "LF";
-        case 1U: return "RF";
-        case 2U: return "LB";
-        case 3U: return "RB";
-        default: return "??";
-    }
-}
 
 static const char *hw_display_mode_name(chassis_mode_t mode)
 {
@@ -36,8 +24,8 @@ static const char *hw_display_mode_name(chassis_mode_t mode)
     {
         case CHASSIS_MODE_SAFE_STOP: return "STOP";
         case CHASSIS_MODE_MANUAL: return "MAN";
-        case CHASSIS_MODE_NAV: return "NAV";
         case CHASSIS_MODE_WHEEL_TUNE: return "TUNE";
+        case CHASSIS_MODE_DRONE_TRACK: return "DRON";
         default: return "UNK";
     }
 }
@@ -92,8 +80,6 @@ static void hw_display_draw_line(uint16 line, uint16 color, const char *text)
 
 static uint16 hw_display_line_color(uint8 line, const chassis_status_t *status)
 {
-    uint8 wheel_index;
-
     if (line == 0U)
     {
         return RGB565_CYAN;
@@ -116,16 +102,6 @@ static uint16 hw_display_line_color(uint8 line, const chassis_status_t *status)
         return RGB565_WHITE;
     }
 
-    if ((line >= 6U) && (line <= 13U))
-    {
-        wheel_index = (uint8)((line - 6U) / 2U);
-        if ((status->tune_active != 0U) && (wheel_index == status->tune_wheel_index))
-        {
-            return ((line & 1U) == 1U) ? RGB565_YELLOW : RGB565_CYAN;
-        }
-        return (((line & 1U) == 0U) && (status->wheel_output_saturated[wheel_index] != 0U)) ? RGB565_PINK : RGB565_WHITE;
-    }
-
     return RGB565_WHITE;
 }
 
@@ -138,7 +114,7 @@ static void hw_display_draw_layout(void)
 
     /* 清屏并重置差分缓冲。不再画分隔横线——原横线坐标(10/26/44/62)不是
      * 行高(8)的倍数，会穿过并遮挡文字行，导致数据显示残缺/看不见。
-     * 各区域靠标签前缀(Y:/DXm:/LF/RF...)自然区分，不需要横线分隔。 */
+     * 当前屏幕只保留无人机 A4 链路和小车实际速度命令。 */
     tft180_full(RGB565_BLACK);
 
     memset(g_last_lines, 0, sizeof(g_last_lines));
@@ -155,19 +131,6 @@ void hw_display_init(void)
     g_display_tick = 0U;
     g_layout_drawn = 0U;
     hw_display_draw_layout();
-}
-
-static void hw_display_make_wheel_lines(char *line_a, char *line_b, const chassis_status_t *status, uint8 wheel_index)
-{
-    const float target = status->wheel_target_mps[wheel_index];
-    const float measured = status->wheel_measured_mps[wheel_index];
-    const float error = status->wheel_error_mps[wheel_index];
-    const int16 duty = (int16)status->motor_duty[wheel_index];
-    const char *name = hw_display_wheel_name(wheel_index);
-    const char suffix = (status->wheel_output_saturated[wheel_index] != 0U) ? '!' : ' ';
-
-    hw_display_make_line(line_a, "%s T%+.2f M%+.2f", name, target, measured);
-    hw_display_make_line(line_b, "E%+.2f D%+4d%c", error, duty, suffix);
 }
 
 void hw_display_update(const chassis_status_t *status)
@@ -193,19 +156,33 @@ void hw_display_update(const chassis_status_t *status)
 
     memset(lines, 0, sizeof(lines));
 
-    hw_display_make_line(lines[0], "%s A2", hw_display_mode_name(status->mode));
+    hw_display_make_line(lines[0], "%s %s",
+                         hw_display_mode_name(status->mode),
+                         ((status->mode == CHASSIS_MODE_DRONE_TRACK) || (status->drone_fresh != 0U)) ? "A4" : "--");
     hw_display_make_line(lines[1], "Y:%+5.1f E:%+5.1f", status->pose_yaw_deg, status->yaw_error_deg);
-    hw_display_make_line(lines[2], "C:%+5.2f,%+5.2f", status->pose_meas_x_m, status->pose_meas_y_m);
-    hw_display_make_line(lines[3], "T:%+5.2f,%+5.2f", status->target_x_m, status->target_y_m);
-    hw_display_make_line(lines[4], "E:%+5.2f,%+5.2f", status->pos_error_x_m, status->pos_error_y_m);
-    hw_display_make_line(lines[5], "D:%+4.2f", status->distance_to_target_m);
+    /* line2: drone pixel error (BVf/BVr = beacon-vs-Vlamp forward/right).
+     * Mirrors the drone LCD line3 labels so values can be cross-checked. */
+    if(status->drone_fresh != 0U)
+    {
+        hw_display_make_line(lines[2], "BVf:%+4d BVr:%+4d",
+                             status->drone_err_fwd_px, status->drone_err_right_px);
+    }
+    else
+    {
+        hw_display_make_line(lines[2], "BVf:---- BVr:----");
+    }
+    /* line3: actual body-frame velocity command sent to mecanum inverse. */
+    hw_display_make_line(lines[3], "VX:%+.2f VY:%+.2f", status->cmd_vx_body_mps, status->cmd_vy_body_mps);
+    /* line4: drone link flags (V=has_vlamp B=has_beacon M=move_valid) + age ms. */
+    hw_display_make_line(lines[4], "F:%u%u%u AG:%3u",
+                         (uint16)((status->drone_flags & 0x01U) != 0U ? 1U : 0U),
+                         (uint16)((status->drone_flags & 0x02U) != 0U ? 1U : 0U),
+                         (uint16)((status->drone_flags & 0x04U) != 0U ? 1U : 0U),
+                         status->drone_age_ms);
+    /* line5: yaw rate command (omega), completes the VX/VY/omega triplet. */
+    hw_display_make_line(lines[5], "W:%+5.2f", status->cmd_omega_radps);
 
-    hw_display_make_wheel_lines(lines[6], lines[7], status, 0U);
-    hw_display_make_wheel_lines(lines[8], lines[9], status, 1U);
-    hw_display_make_wheel_lines(lines[10], lines[11], status, 2U);
-    hw_display_make_wheel_lines(lines[12], lines[13], status, 3U);
-
-    /* 只刷新实际有内容的行（0-13），去掉原来对 14-19 空行的无意义判断。 */
+    /* 只刷新实际有内容的行。 */
     for (i = 0U; i < DISPLAY_USED_LINE_COUNT; ++i)
     {
         if (strcmp(lines[i], g_last_lines[i]) != 0)

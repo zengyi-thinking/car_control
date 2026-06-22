@@ -6,7 +6,7 @@
 #include "hardware/hw_indicator.h"
 #include "hardware/hw_motor_drv8701e.h"
 #include "hardware/sensors/hw_imu.h"
-#include "protocol/proto_nav.h"
+#include "protocol/proto_drone.h"
 #include "protocol/proto_remote.h"
 
 #include <string.h>
@@ -16,11 +16,11 @@ extern volatile uint8 g_chassis_wheel_pid_tune_enabled;
 typedef struct
 {
     proto_remote_data_t remote;
-    proto_nav_data_t nav;
+    proto_drone_data_t drone;
     uint8 has_remote;
-    uint8 has_nav;
+    uint8 has_drone;
     uint16 remote_age_ms;
-    uint16 nav_age_ms;
+    uint16 drone_age_ms;
     chassis_mode_t mode;
 } app_car_runtime_t;
 
@@ -31,15 +31,37 @@ static uint8 app_remote_fresh(void)
     return g_app_runtime.has_remote && (g_app_runtime.remote_age_ms <= HW_REMOTE_TIMEOUT_MS);
 }
 
-static uint8 app_nav_fresh(void)
+static uint8 app_drone_fresh(void)
 {
-    return g_app_runtime.has_nav && (g_app_runtime.nav_age_ms <= HW_NAV_TIMEOUT_MS);
+    return g_app_runtime.has_drone && (g_app_runtime.drone_age_ms <= HW_DRONE_TIMEOUT_MS);
+}
+
+static uint8 app_drone_move_valid(void)
+{
+    return app_drone_fresh() &&
+           ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U);
+}
+
+static uint16 app_abs_i16(int16 value)
+{
+    return (value < 0) ? (uint16)(-value) : (uint16)value;
+}
+
+static uint8 app_remote_manual_override(void)
+{
+    if(!app_remote_fresh())
+    {
+        return 0U;
+    }
+
+    return ((app_abs_i16(g_app_runtime.remote.joystick[0]) >= (uint16)HW_DRONE_REMOTE_OVERRIDE_RAW) ||
+            (app_abs_i16(g_app_runtime.remote.joystick[1]) >= (uint16)HW_DRONE_REMOTE_OVERRIDE_RAW)) ? 1U : 0U;
 }
 
 static void app_update_mode(void)
 {
-    const uint8 remote_fresh = app_remote_fresh();
-    const uint8 nav_fresh = app_nav_fresh();
+    const uint8 remote_override = app_remote_manual_override();
+    const uint8 drone_move_valid = app_drone_move_valid();
 
     if (g_chassis_wheel_pid_tune_enabled)
     {
@@ -47,13 +69,13 @@ static void app_update_mode(void)
         return;
     }
 
-    if (nav_fresh)
-    {
-        g_app_runtime.mode = CHASSIS_MODE_NAV;
-    }
-    else if (remote_fresh)
+    if (remote_override)
     {
         g_app_runtime.mode = CHASSIS_MODE_MANUAL;
+    }
+    else if (drone_move_valid)
+    {
+        g_app_runtime.mode = CHASSIS_MODE_DRONE_TRACK;
     }
     else
     {
@@ -70,7 +92,7 @@ void app_car_init(void)
     hw_indicator_init();
     hw_display_init();
     hw_imu_init();
-    proto_nav_init();
+    proto_drone_init();
     proto_remote_init();
     chassis_control_init();
     chassis_control_set_mode(CHASSIS_MODE_SAFE_STOP);
@@ -102,21 +124,21 @@ void app_car_step(void)
         g_app_runtime.remote_age_ms = (uint16)(g_app_runtime.remote_age_ms + HW_CONTROL_PERIOD_MS);
     }
 
-    if (proto_nav_update(&g_app_runtime.nav))
+    if (proto_drone_update(&g_app_runtime.drone))
     {
-        g_app_runtime.has_nav = 1U;
-        g_app_runtime.nav_age_ms = 0U;
+        g_app_runtime.has_drone = 1U;
+        g_app_runtime.drone_age_ms = 0U;
     }
-    else if (g_app_runtime.nav_age_ms < 0xFFFFU)
+    else if (g_app_runtime.drone_age_ms < 0xFFFFU)
     {
-        g_app_runtime.nav_age_ms = (uint16)(g_app_runtime.nav_age_ms + HW_CONTROL_PERIOD_MS);
+        g_app_runtime.drone_age_ms = (uint16)(g_app_runtime.drone_age_ms + HW_CONTROL_PERIOD_MS);
     }
 
     app_update_mode();
 
     chassis_control_set_mode(g_app_runtime.mode);
     chassis_control_set_remote(&g_app_runtime.remote, app_remote_fresh(), g_app_runtime.remote_age_ms);
-    chassis_control_set_nav(&g_app_runtime.nav, app_nav_fresh(), g_app_runtime.nav_age_ms);
+    chassis_control_set_drone(&g_app_runtime.drone, app_drone_fresh(), g_app_runtime.drone_age_ms);
     chassis_control_step(enc_counts, HW_CONTROL_PERIOD_S, &attitude);
 
     status = chassis_control_get_status();
@@ -130,7 +152,7 @@ void app_car_step(void)
         hw_motor_drv8701e_stop_all();
     }
 
-    if (status->remote_fresh || status->nav_fresh || status->tune_active || (status->position_move_state == CHASSIS_POSITION_MOVE_RUN))
+    if (status->remote_fresh || status->drone_fresh || status->tune_active || (status->position_move_state == CHASSIS_POSITION_MOVE_RUN))
     {
         hw_indicator_on();
     }

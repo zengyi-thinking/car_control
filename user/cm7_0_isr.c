@@ -1,6 +1,6 @@
 #include "zf_common_headfile.h"
 #include "hardware/hw_board_pins.h"
-#include "protocol/proto_nav.h"
+#include "protocol/proto_drone.h"
 #include "protocol/proto_remote.h"
 
 static void app_uart_service(uart_index_enum uart_index)
@@ -18,9 +18,9 @@ static void app_uart_service(uart_index_enum uart_index)
         {
             proto_remote_on_byte(byte);
         }
-        else if (uart_index == HW_NAV_UART)
+        else if (uart_index == HW_DRONE_UART)
         {
-            proto_nav_on_byte(byte);
+            proto_drone_on_byte(byte);
         }
     }
 }
