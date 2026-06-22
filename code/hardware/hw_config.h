@@ -31,9 +31,10 @@
 #define HW_DRONE_MAX_FWD_MPS                  0.80f
 #define HW_DRONE_MAX_RIGHT_MPS                0.80f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
-/* beacon_rel_lat defined as positive = beacon on car LEFT side, but mecanum
- * vy_body positive = move RIGHT, so the right axis must be inverted. */
-#define HW_DRONE_RIGHT_SIGN                   (-1.0f)
+/* Car reference frame for the drone link:
+ *   +Y = forward, +X = right.
+ * A4 err_fwd drives +Y, err_right drives +X. */
+#define HW_DRONE_RIGHT_SIGN                   (1.0f)
 #define HW_DRONE_REMOTE_OVERRIDE_RAW          260
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f

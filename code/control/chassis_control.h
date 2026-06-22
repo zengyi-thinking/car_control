@@ -92,8 +92,14 @@ typedef struct
     float tune_target_mps;
     float tune_selected_value;
     float tune_selected_step;
-    int16 drone_err_fwd_px;
-    int16 drone_err_right_px;
+    int16 drone_v_x_px;
+    int16 drone_v_y_px;
+    int16 drone_beacon_x_px;
+    int16 drone_beacon_y_px;
+    int16 drone_vb_x_px;
+    int16 drone_vb_y_px;
+    uint16 drone_v_conf_permille;
+    uint16 drone_beacon_conf_permille;
     uint8 drone_flags;
 } chassis_status_t;
 

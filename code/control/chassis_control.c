@@ -4,7 +4,7 @@
  * 控制模式:
  * 1. SAFE_STOP: 电机停转
  * 2. MANUAL: LoRa 遥控摇杆直控 + IMU 锁头
- * 3. DRONE_TRACK: 0xA4 无人机像素误差 + 车体系速度控制 + IMU 锁头
+ * 3. DRONE_TRACK: 0xA4 无人机 V/B 像素坐标 + 车体系速度控制 + IMU 锁头
  ******************************************************************************/
 
 #include "control/chassis_control.h"
@@ -1126,8 +1126,14 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
     g_status.drone_flags = g_runtime.drone.flags;
     g_status.drone_move_valid = ((fresh != 0U) &&
                                  ((g_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U)) ? 1U : 0U;
-    g_status.drone_err_fwd_px = g_runtime.drone.err_fwd_px;
-    g_status.drone_err_right_px = g_runtime.drone.err_right_px;
+    g_status.drone_v_x_px = g_runtime.drone.v_x_px;
+    g_status.drone_v_y_px = g_runtime.drone.v_y_px;
+    g_status.drone_beacon_x_px = g_runtime.drone.beacon_x_px;
+    g_status.drone_beacon_y_px = g_runtime.drone.beacon_y_px;
+    g_status.drone_vb_x_px = g_runtime.drone.vb_x_px;
+    g_status.drone_vb_y_px = g_runtime.drone.vb_y_px;
+    g_status.drone_v_conf_permille = g_runtime.drone.v_conf_permille;
+    g_status.drone_beacon_conf_permille = g_runtime.drone.beacon_conf_permille;
 }
 
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude)
@@ -1418,8 +1424,8 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         {
             if (g_status.drone_move_valid != 0U)
             {
-                const float fwd_norm = chassis_drone_error_to_norm(g_runtime.drone.err_fwd_px);
-                const float right_norm = chassis_drone_error_to_norm(g_runtime.drone.err_right_px);
+                const float fwd_norm = chassis_drone_error_to_norm(g_runtime.drone.vb_y_px);
+                const float right_norm = chassis_drone_error_to_norm(g_runtime.drone.vb_x_px);
 
                 vx_body_cmd = HW_DRONE_FWD_SIGN * fwd_norm * HW_DRONE_MAX_FWD_MPS;
                 vy_body_cmd = HW_DRONE_RIGHT_SIGN * right_norm * HW_DRONE_MAX_RIGHT_MPS;
