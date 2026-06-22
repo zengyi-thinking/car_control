@@ -200,8 +200,10 @@ static void hw_display_graph_border(void)
     hw_display_graph_line(cx, 2, cx, (int16)(DISPLAY_GRAPH_H - 4U), RGB565_39C5BB);
     hw_display_graph_line((int16)(DISPLAY_GRAPH_W - 8U), (int16)(cy - 3), (int16)(DISPLAY_GRAPH_W - 3U), cy, RGB565_39C5BB);
     hw_display_graph_line((int16)(DISPLAY_GRAPH_W - 8U), (int16)(cy + 3), (int16)(DISPLAY_GRAPH_W - 3U), cy, RGB565_39C5BB);
-    hw_display_graph_line((int16)(cx - 3), (int16)(DISPLAY_GRAPH_H - 8U), cx, (int16)(DISPLAY_GRAPH_H - 3U), RGB565_39C5BB);
-    hw_display_graph_line((int16)(cx + 3), (int16)(DISPLAY_GRAPH_H - 8U), cx, (int16)(DISPLAY_GRAPH_H - 3U), RGB565_39C5BB);
+    /* +Y arrowhead points UP (top of image), matching the car IMU +Y silk.
+     * The down-arrowhead was removed so the axis reads as +Y up, not bidirectional. */
+    hw_display_graph_line((int16)(cx - 3), 7, cx, 2, RGB565_39C5BB);
+    hw_display_graph_line((int16)(cx + 3), 7, cx, 2, RGB565_39C5BB);
     hw_display_graph_cross(cx, cy, 3, RGB565_WHITE);
 }
 
@@ -253,11 +255,13 @@ static void hw_display_draw_graph(const chassis_status_t *status)
                              DISPLAY_GRAPH_H,
                              0U);
     tft180_set_color(RGB565_CYAN, RGB565_BLACK);
+    /* Axis labels: +X stays on the right (original), +Y moved to top to match
+     * the car IMU silk (forward = up in this image). */
     tft180_show_string((uint16)(DISPLAY_GRAPH_X + DISPLAY_GRAPH_W - 15U),
                        (uint16)(DISPLAY_GRAPH_Y + hw_display_map_y((int16)(DISPLAY_CAMERA_H / 2U)) - 8U),
                        "+X");
     tft180_show_string((uint16)(DISPLAY_GRAPH_X + hw_display_map_x((int16)(DISPLAY_CAMERA_W / 2U)) + 3U),
-                       (uint16)(DISPLAY_GRAPH_Y + DISPLAY_GRAPH_H - 10U),
+                       (uint16)(DISPLAY_GRAPH_Y + 2U),
                        "+Y");
 }
 
