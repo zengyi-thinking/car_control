@@ -316,9 +316,10 @@ void hw_display_update(const chassis_status_t *status)
 
     memset(lines, 0, sizeof(lines));
 
-    hw_display_make_line(lines[0], "%s %s",
+    hw_display_make_line(lines[0], "%s tg%+6.1f e%+4.1f",
                          hw_display_mode_name(status->mode),
-                         ((status->mode == CHASSIS_MODE_DRONE_TRACK) || (status->drone_fresh != 0U)) ? "A4" : "--");
+                         status->target_yaw_deg,
+                         status->yaw_error_deg);
 
     if(has_b != 0U)
     {

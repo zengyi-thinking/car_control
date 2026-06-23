@@ -90,13 +90,8 @@
 #define HW_IMU_ACC_WEIGHT_MIN_DEV_G            (0.25f)
 #define HW_IMU_ACC_WEIGHT_MIN                  (0.25f)
 
-/* During straight translation, let the IMU keep trimming tiny z-rate bias
- * using encoder/odometry confirmation that the chassis is not actually turning.
- */
-#define HW_IMU_MOTION_TRIM_TRANSLATION_MPS     (0.08f)
-#define HW_IMU_MOTION_TRIM_OMEGA_RADPS         (0.05f)
-#define HW_IMU_MOTION_TRIM_RATE_DEADBAND_DPS   (0.03f)
-#define HW_IMU_MOTION_TRIM_GAIN                (0.25f)
-#define HW_IMU_MOTION_TRIM_LIMIT_DPS           (0.40f)
+/* NOTE: 平移时学习陀螺z零偏的 HW_IMU_MOTION_TRIM_* 机制已移除 — 它与 IMU 自身的静止ZRU
+ * 冲突造成双重扣零偏, 回静止后引发 yaw 匀速漂移(最高0.40dps≈80°/200s).
+ * 无磁力计时z零偏仅在静止可观测, 完全依赖 hw_imu_update_bias() 的静止标定即可. */
 
 #endif

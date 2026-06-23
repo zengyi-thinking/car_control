@@ -26,15 +26,23 @@
 #define CHASSIS_POS_DEADBAND_M              0.03f
 #define CHASSIS_ARRIVE_VEL_MPS              0.08f
 
-#define CHASSIS_HEADING_KP                  2.4f
-#define CHASSIS_HEADING_KI                  0.03f
-#define CHASSIS_HEADING_KD                  0.28f
-#define CHASSIS_HEADING_I_LIMIT             0.06f
-#define CHASSIS_HEADING_ERR_DEADBAND_DEG    0.4f
+/* yaw 保持控制器参数. 这组参数针对「电机疲劳造成四轮不对称 → 持续旋转扰动」设计:
+ * KP 提供即时回正力矩; KI + I_LIMIT 提供足够积分权限去"吃掉"恒定不对称扰动
+ * (这是无磁力计麦轮航向锁定的关键 — 持续扰动只能靠积分抵消, 见 IEEE 11301709);
+ * KD 直接阻尼陀螺角速率, 抑制超调与振荡. */
+#define CHASSIS_HEADING_KP                  3.5f
+#define CHASSIS_HEADING_KI                  0.18f
+#define CHASSIS_HEADING_KD                  0.38f
+#define CHASSIS_HEADING_I_LIMIT             0.60f
+/* 仅作为「静止防抖」死区: 只有当车体几乎不动(平移速度<阈值)时才生效,
+ * 避免在移动中把积分清零导致「攒→清→攒」周期性摆动. 移动中小偏差必须持续修正,
+ * 否则长距离直线行驶会因小幅偏差累积而缓慢偏航. */
+#define CHASSIS_HEADING_ERR_DEADBAND_DEG    0.15f
 #define CHASSIS_HEADING_GYRO_DEADBAND_RADPS 0.010f
+#define CHASSIS_HEADING_STATIC_VEL_MPS      0.05f   /* 低于此平移速度视为静止 */
 
 #define CHASSIS_STARTUP_LOCK_TIME_S         1.0f
-#define CHASSIS_STARTUP_YAW_STABLE_DEG      8.0f
+#define CHASSIS_STARTUP_YAW_STABLE_DEG      3.0f
 
 #define CHASSIS_REMOTE_AXIS_MAX             1600.0f
 #define CHASSIS_REMOTE_DEADBAND             100.0f
@@ -46,18 +54,18 @@
 
 static const float s_wheel_pid_kp[4] =
 {
-    650.0f,   /* LF */
-    720.0f,   /* RF: 右前起步稍强 */
-    650.0f,   /* LB */
-    720.0f,   /* RB: 右后起步稍强 */
+    700.0f,   /* LF: 四轮一致起步，消除旧的"右侧补强"偏置 */
+    700.0f,   /* RF */
+    700.0f,   /* LB */
+    700.0f,   /* RB */
 };
 
 static const float s_wheel_pid_ki[4] =
 {
-    160.0f,   /* LF */
-    180.0f,   /* RF */
-    160.0f,   /* LB */
-    180.0f,   /* RB */
+    170.0f,   /* LF: 四轮一致 */
+    170.0f,   /* RF */
+    170.0f,   /* LB */
+    170.0f,   /* RB */
 };
 
 static const float s_wheel_pid_kd[4] =
@@ -83,10 +91,10 @@ volatile float g_chassis_wheel_pid_tune_target_mps = HW_WHEEL_TUNE_TARGET_MPS;
 
 static const float s_wheel_ff_ks_duty[4] =
 {
-    260.0f,   /* LF */
-    400.0f,   /* RF: 右侧补一点静摩擦 */
-    250.0f,   /* LB */
-    420.0f,   /* RB */
+    300.0f,   /* LF: 四轮一致起步，消除旧的"右侧补强"偏置 */
+    300.0f,   /* RF */
+    300.0f,   /* LB */
+    300.0f,   /* RB */
 };
 
 typedef struct
@@ -104,6 +112,7 @@ typedef struct
     float cmd_vx_body_state;
     float cmd_vy_body_state;
     float gyro_z_bias_radps;
+    float gyro_z_bias_inflight_radps;  /* 运动中在线估计的陀螺z零偏(温漂补偿) */
     float motion_yaw_trim_dps;
     float startup_reference_yaw_deg;
     float startup_reference_yaw_min_deg;
@@ -296,6 +305,7 @@ static float chassis_feedforward_duty(uint8 wheel, float target_speed_mps)
 static void chassis_startup_lock_reset(void)
 {
     g_runtime.gyro_z_bias_radps = 0.0f;
+    g_runtime.gyro_z_bias_inflight_radps = 0.0f;
     g_runtime.startup_reference_yaw_deg = 0.0f;
     g_runtime.startup_reference_yaw_min_deg = 0.0f;
     g_runtime.startup_reference_yaw_max_deg = 0.0f;
@@ -371,7 +381,11 @@ static void chassis_startup_lock_step(float yaw_deg, float gyro_z_radps, float d
 
     if (g_runtime.startup_lock_elapsed_s >= CHASSIS_STARTUP_LOCK_TIME_S)
     {
-        g_runtime.yaw_lock_continuous_deg = g_runtime.startup_reference_yaw_deg;
+        /* 锚定到「窗口结束时的当前 yaw」(已收敛值), 而非第一帧的 startup_reference_yaw_deg.
+         * 上电瞬间 AHRS 互补滤波尚未收敛, 第一帧 yaw 是漂移的暂态值; 若锚定到它,
+         * 1 秒后 IMU 收敛到真实航向, 目标却还停在旧值 -> 上电即出现 ~8° (≈STABLE 阈值) 偏差.
+         * startup_reference_yaw_deg 仅继续用于上面的稳定性判定 (相对首帧漂移是否超阈值). */
+        g_runtime.yaw_lock_continuous_deg = yaw_deg;
         g_runtime.yaw_lock_deg = chassis_wrap_deg(g_runtime.yaw_lock_continuous_deg);
         g_runtime.gyro_z_bias_radps = g_runtime.startup_gyro_sum_radps / ((g_runtime.startup_lock_samples > 0U) ? (float)g_runtime.startup_lock_samples : 1.0f);
         g_runtime.yaw_lock_valid = 1U;
@@ -400,7 +414,21 @@ static float chassis_yaw_error_deg(float yaw_deg)
     return chassis_wrap_deg(yaw_deg - g_runtime.yaw_lock_continuous_deg);
 }
 
-static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float dt_s)
+/* 运动中在线陀螺z零偏估计. 无磁力计麦轮的关键: 上电静止标定的零偏会因温漂变化,
+ * 运动中无法重新静止标定, 故用 yaw 积分方向作为可观测量缓慢学习.
+ * 原理: 若存在残余零偏 b, yaw 会以 b 速率持续单向漂移 → yaw_hold 积分朝修正方向
+ * 累积. 当积分已接近饱和(说明扰动持续存在), 把一小部分积分"迁移"成零偏估计,
+ * 这样零偏慢慢吸收恒定扰动, 积分留余量应对瞬态. 学习极慢(增益0.001)避免误学真实转动. */
+#define CHASSIS_BIAS_LEARN_GAIN              0.0015f
+#define CHASSIS_BIAS_LEARN_MIN_INTEGRAL_FRAC 0.5f   /* 积分>50%饱和时才学零偏 */
+#define CHASSIS_BIAS_LEARN_LIMIT_RADPS        0.020f /* 在线零偏估计限幅(~1.1dps) */
+
+/* 统一的 yaw 保持控制器. strict=1 时完全不设死区(用于位置控制, 任何偏差都要修);
+ * strict=0 时只在车体静止时启用防抖死区, 移动中持续修正(避免长直线摆动).
+ * 注意: 不再因死区清空 heading_integral, 仅在静止+小偏差时停止累加并输出0,
+ * 这样移动中累积的修正量在短暂静止后能立即复用, 保持更稳定. */
+static float chassis_yaw_hold_core(float yaw_deg, float gyro_z_radps, float transl_speed_mps,
+                                   float dt_s, uint8 strict)
 {
     float yaw_err_deg;
     float yaw_err_rad;
@@ -408,6 +436,7 @@ static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float dt_s)
     float unsat_output;
     float omega_cmd;
     float gyro_z_corrected_radps;
+    float total_bias_radps;
 
     if (!g_runtime.yaw_lock_valid || (dt_s <= 0.0f))
     {
@@ -415,13 +444,18 @@ static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float dt_s)
         return 0.0f;
     }
 
-    gyro_z_corrected_radps = gyro_z_radps - g_runtime.gyro_z_bias_radps;
+    /* 总零偏 = 上电静止标定零偏 + 运动中在线零偏估计(温漂补偿). */
+    total_bias_radps = g_runtime.gyro_z_bias_radps + g_runtime.gyro_z_bias_inflight_radps;
+    gyro_z_corrected_radps = gyro_z_radps - total_bias_radps;
     yaw_err_deg = chassis_yaw_error_deg(yaw_deg);
 
-    if ((fabsf(yaw_err_deg) < CHASSIS_HEADING_ERR_DEADBAND_DEG) &&
+    /* 静止防抖死区: 仅 strict=0 且车体静止时, 对极小偏差+低转速输出0.
+     * 不清空 integral — 移动中攒的修正量保留, 下次有偏差可继续修正. */
+    if ((strict == 0U) &&
+        (transl_speed_mps < CHASSIS_HEADING_STATIC_VEL_MPS) &&
+        (fabsf(yaw_err_deg) < CHASSIS_HEADING_ERR_DEADBAND_DEG) &&
         (fabsf(gyro_z_corrected_radps) < CHASSIS_HEADING_GYRO_DEADBAND_RADPS))
     {
-        g_runtime.heading_integral = 0.0f;
         g_status.yaw_error_deg = yaw_err_deg;
         return 0.0f;
     }
@@ -431,12 +465,28 @@ static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float dt_s)
     integral_candidate = g_runtime.heading_integral + (yaw_err_rad * CHASSIS_HEADING_KI * dt_s);
     integral_candidate = chassis_clamp(integral_candidate, -CHASSIS_HEADING_I_LIMIT, CHASSIS_HEADING_I_LIMIT);
 
+    /* 条件积分(防积分饱和): 仅当未饱和或饱和方向与误差符号相反时才提交积分. */
     unsat_output = CHASSIS_HEADING_KP * yaw_err_rad + integral_candidate - CHASSIS_HEADING_KD * gyro_z_corrected_radps;
     if ((fabsf(unsat_output) <= HW_MAX_YAW_RATE_RADPS) ||
         ((unsat_output > HW_MAX_YAW_RATE_RADPS) && (yaw_err_rad < 0.0f)) ||
         ((unsat_output < -HW_MAX_YAW_RATE_RADPS) && (yaw_err_rad > 0.0f)))
     {
         g_runtime.heading_integral = integral_candidate;
+    }
+
+    /* 在线零偏学习: 当积分已接近饱和(>I_LIMIT 的阈值比例), 说明存在持续单向扰动,
+     * 极缓慢地把残余零偏从积分迁移到 bias_inflight. 仅移动中学习(transl_speed>静态阈值). */
+    if ((strict == 0U) &&
+        (transl_speed_mps >= CHASSIS_HEADING_STATIC_VEL_MPS) &&
+        (fabsf(g_runtime.heading_integral) > (CHASSIS_HEADING_I_LIMIT * CHASSIS_BIAS_LEARN_MIN_INTEGRAL_FRAC)))
+    {
+        /* 积分符号指示了偏移方向: 积分为负=车在CCW漂(需CW修正), 意味着 gyro 残余为正. */
+        const float bias_delta = -g_runtime.heading_integral * CHASSIS_BIAS_LEARN_GAIN * dt_s;
+        g_runtime.gyro_z_bias_inflight_radps =
+            chassis_clamp(g_runtime.gyro_z_bias_inflight_radps + bias_delta,
+                          -CHASSIS_BIAS_LEARN_LIMIT_RADPS, CHASSIS_BIAS_LEARN_LIMIT_RADPS);
+        /* 同步释放一部分积分(已迁移到零偏), 防止积分长期顶在饱和值. */
+        g_runtime.heading_integral += bias_delta;
     }
 
     omega_cmd = CHASSIS_HEADING_KP * yaw_err_rad + g_runtime.heading_integral - CHASSIS_HEADING_KD * gyro_z_corrected_radps;
@@ -445,40 +495,14 @@ static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float dt_s)
     return omega_cmd;
 }
 
-static float chassis_yaw_hold_strict(float yaw_deg, float gyro_z_radps, float dt_s)
+static float chassis_yaw_hold(float yaw_deg, float gyro_z_radps, float transl_speed_mps, float dt_s)
 {
-    float yaw_err_deg;
-    float yaw_err_rad;
-    float integral_candidate;
-    float unsat_output;
-    float omega_cmd;
-    float gyro_z_corrected_radps;
+    return chassis_yaw_hold_core(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s, 0U);
+}
 
-    if (!g_runtime.yaw_lock_valid || (dt_s <= 0.0f))
-    {
-        g_status.yaw_error_deg = 0.0f;
-        return 0.0f;
-    }
-
-    gyro_z_corrected_radps = gyro_z_radps - g_runtime.gyro_z_bias_radps;
-    yaw_err_deg = chassis_yaw_error_deg(yaw_deg);
-    yaw_err_rad = yaw_err_deg * CHASSIS_DEG_TO_RAD;
-
-    integral_candidate = g_runtime.heading_integral + (yaw_err_rad * CHASSIS_HEADING_KI * dt_s);
-    integral_candidate = chassis_clamp(integral_candidate, -CHASSIS_HEADING_I_LIMIT, CHASSIS_HEADING_I_LIMIT);
-
-    unsat_output = CHASSIS_HEADING_KP * yaw_err_rad + integral_candidate - CHASSIS_HEADING_KD * gyro_z_corrected_radps;
-    if ((fabsf(unsat_output) <= HW_MAX_YAW_RATE_RADPS) ||
-        ((unsat_output > HW_MAX_YAW_RATE_RADPS) && (yaw_err_rad < 0.0f)) ||
-        ((unsat_output < -HW_MAX_YAW_RATE_RADPS) && (yaw_err_rad > 0.0f)))
-    {
-        g_runtime.heading_integral = integral_candidate;
-    }
-
-    omega_cmd = CHASSIS_HEADING_KP * yaw_err_rad + g_runtime.heading_integral - CHASSIS_HEADING_KD * gyro_z_corrected_radps;
-    omega_cmd = chassis_clamp(omega_cmd, -HW_MAX_YAW_RATE_RADPS, HW_MAX_YAW_RATE_RADPS);
-    g_status.yaw_error_deg = yaw_err_deg;
-    return omega_cmd;
+static float chassis_yaw_hold_strict(float yaw_deg, float gyro_z_radps, float transl_speed_mps, float dt_s)
+{
+    return chassis_yaw_hold_core(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s, 1U);
 }
 
 static float chassis_limit_translation_scale(const float translation_wheel[4], const float rotation_wheel[4], float max_speed)
@@ -659,14 +683,29 @@ static uint8 chassis_remote_button_pressed(const proto_remote_data_t *remote, ui
 
 static float chassis_drone_error_to_norm(int16 err_px)
 {
-    /* Bang-bang: return full-speed sign (+1 / -1) once outside the deadband,
-     * zero inside. No proportional scaling; max speed is set by the caller. */
-    if(fabsf((float)err_px) <= HW_DRONE_DEADBAND_PX)
+    /* 比例 + 软饱和, 取代旧的 bang-bang (全速/全停).
+     * 控制曲线:
+     *   |err| <= deadband(4px)           : 0      (静止, 抗像素噪声抖动)
+     *   deadband < |err| <= PX_NORM(160) : 线性比例 0->1.0 (接近目标减速, 避免过冲)
+     *   |err| > PX_NORM                  : 软饱和 1.0      (远处全速接近)
+     * 收益: 接近 beacon 时减速而非全速冲, 大幅减少过冲振荡; 无人机视觉~100ms延迟下
+     * 比例控制远比 bang-bang 平滑, 电机不再频繁正反转切换. */
+    const float err = (float)err_px;
+    const float abs_err = fabsf(err);
+
+    if (abs_err <= HW_DRONE_DEADBAND_PX)
     {
         return 0.0f;
     }
 
-    return (err_px > 0) ? 1.0f : -1.0f;
+    if (abs_err >= HW_DRONE_PX_NORM)
+    {
+        return (err > 0.0f) ? 1.0f : -1.0f;
+    }
+
+    /* 线性比例段: 从 deadband 处的 0 线性升到 PX_NORM 处的 1.0. */
+    return ((abs_err - HW_DRONE_DEADBAND_PX) / (HW_DRONE_PX_NORM - HW_DRONE_DEADBAND_PX))
+           * ((err > 0.0f) ? 1.0f : -1.0f);
 }
 
 static void chassis_position_move_reset(void)
@@ -920,36 +959,22 @@ static uint8 chassis_stationary_hint_from_status(void)
     return 1U;
 }
 
+/* 注意: 原实现 chssäis_update_motion_yaw_trim() 会在平移时把陀螺z速率积分进零偏,
+ * 与 IMU 自身的静止ZRU(hw_imu_update_bias)冲突, 造成"双重扣零偏" ->
+ * 一旦学到一个非零trim(平移时无法区分真实转动与零偏), 回静止后 gyro_corr[2]≈-trim
+ * 成为恒定误差, AHRS匀速漂移, yaw_hold跟转, 最终车体转80°+. 无磁力计时z零偏
+ * 仅在静止可观测, 故此学习器是有害设计, 已移除. 保留函数体(被周期调用)用于持续
+ * 冲刷trim清零, 确保任何残留坏值不会在运行中被意外恢复. */
 static void chassis_update_motion_yaw_trim(float gyro_z_radps, float dt_s)
 {
-    float translation_speed_mps;
-    float gyro_z_dps;
-    float trim_candidate_dps;
+    (void)gyro_z_radps;
+    (void)dt_s;
 
-    if ((dt_s <= 0.0f) || !g_runtime.startup_lock_done || !g_runtime.yaw_lock_valid || !g_runtime.odom.valid)
+    if (g_runtime.motion_yaw_trim_dps != 0.0f)
     {
-        return;
+        g_runtime.motion_yaw_trim_dps = 0.0f;
+        hw_imu_set_gyro_z_trim(0.0f);
     }
-
-    translation_speed_mps = sqrtf((g_runtime.odom.vx_field_mps * g_runtime.odom.vx_field_mps) +
-                                  (g_runtime.odom.vy_field_mps * g_runtime.odom.vy_field_mps));
-    if ((translation_speed_mps < HW_IMU_MOTION_TRIM_TRANSLATION_MPS) ||
-        (fabsf(g_runtime.odom.omega_radps) > HW_IMU_MOTION_TRIM_OMEGA_RADPS))
-    {
-        return;
-    }
-
-    gyro_z_dps = gyro_z_radps * CHASSIS_RAD_TO_DEG;
-    if (fabsf(gyro_z_dps) < HW_IMU_MOTION_TRIM_RATE_DEADBAND_DPS)
-    {
-        return;
-    }
-
-    trim_candidate_dps = g_runtime.motion_yaw_trim_dps + (gyro_z_dps * HW_IMU_MOTION_TRIM_GAIN * dt_s);
-    g_runtime.motion_yaw_trim_dps = chassis_clamp(trim_candidate_dps,
-                                                  -HW_IMU_MOTION_TRIM_LIMIT_DPS,
-                                                  HW_IMU_MOTION_TRIM_LIMIT_DPS);
-    hw_imu_set_gyro_z_trim(g_runtime.motion_yaw_trim_dps);
 }
 
 static void chassis_manual_snap_axes(float *joy_x, float *joy_y)
@@ -990,6 +1015,8 @@ static uint8 chassis_run_position_control(float yaw_deg,
     const float braking_speed_limit = sqrtf(2.0f * HW_MAX_LINEAR_ACCEL_MPS2 * distance_m);
     const float max_step = HW_MAX_LINEAR_ACCEL_MPS2 * dt_s;
     const float yaw_rad = yaw_deg * CHASSIS_DEG_TO_RAD;
+    const float transl_speed_mps = sqrtf((g_runtime.odom.vx_field_mps * g_runtime.odom.vx_field_mps) +
+                                         (g_runtime.odom.vy_field_mps * g_runtime.odom.vy_field_mps));
 
     *vx_field_cmd = CHASSIS_POS_KP * err_field_x - CHASSIS_VEL_DAMP_K * g_runtime.odom.vx_field_mps;
     *vy_field_cmd = CHASSIS_POS_KP * err_field_y - CHASSIS_VEL_DAMP_K * g_runtime.odom.vy_field_mps;
@@ -1024,7 +1051,7 @@ static uint8 chassis_run_position_control(float yaw_deg,
     *vy_field_cmd = g_runtime.cmd_vy_field_state;
     *vx_body_cmd = cosf(yaw_rad) * (*vx_field_cmd) + sinf(yaw_rad) * (*vy_field_cmd);
     *vy_body_cmd = -sinf(yaw_rad) * (*vx_field_cmd) + cosf(yaw_rad) * (*vy_field_cmd);
-    *omega_cmd = chassis_yaw_hold_strict(yaw_deg, gyro_z_radps, dt_s);
+    *omega_cmd = chassis_yaw_hold_strict(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
 
     chassis_field_to_imu_error(err_field_x,
                                err_field_y,
@@ -1086,6 +1113,7 @@ void chassis_control_reset(void)
     g_runtime.cmd_vx_field_state = 0.0f;
     g_runtime.cmd_vy_field_state = 0.0f;
     g_runtime.gyro_z_bias_radps = 0.0f;
+    g_runtime.gyro_z_bias_inflight_radps = 0.0f;
     g_runtime.motion_yaw_trim_dps = 0.0f;
     g_runtime.startup_gyro_sum_radps = 0.0f;
     g_runtime.startup_lock_elapsed_s = 0.0f;
@@ -1157,6 +1185,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     float vy_body_cmd = 0.0f;
     float omega_cmd = 0.0f;
     float wheel_target_mps[4] = {0};
+    float transl_speed_mps = 0.0f;   /* 车体平移速度模, 喂给 yaw_hold 做静止防抖判据 */
     uint8 command_active = 0U;
     uint8 attitude_valid = 0U;
     float left_x = 0.0f;
@@ -1199,6 +1228,8 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     g_status.pose_yaw_deg = chassis_wrap_deg(yaw_deg);
     g_status.vel_x_field_mps = g_runtime.odom.vx_field_mps;
     g_status.vel_y_field_mps = g_runtime.odom.vy_field_mps;
+    transl_speed_mps = sqrtf((g_runtime.odom.vx_field_mps * g_runtime.odom.vx_field_mps) +
+                             (g_runtime.odom.vy_field_mps * g_runtime.odom.vy_field_mps));
 
     for (uint8 i = 0; i < 4U; ++i)
     {
@@ -1424,7 +1455,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 vx_body_cmd = g_status.user_cmd_y_mps;
                 vy_body_cmd = joy_x * HW_MANUAL_MAX_LATERAL_SPEED_MPS;
                 chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
-                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
@@ -1441,7 +1472,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 vx_body_cmd = HW_DRONE_FWD_SIGN * fwd_norm * HW_DRONE_MAX_FWD_MPS;
                 vy_body_cmd = HW_DRONE_RIGHT_SIGN * right_norm * HW_DRONE_MAX_RIGHT_MPS;
                 chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
-                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
@@ -1458,7 +1489,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 {
                     vx_body_cmd = g_runtime.cmd_vx_body_state;
                     vy_body_cmd = g_runtime.cmd_vy_body_state;
-                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                     command_active = 1U;
                     g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                     g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
@@ -1493,7 +1524,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             {
                 vx_body_cmd = 0.0f;
                 vy_body_cmd = 0.0f;
-                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = 1U;
