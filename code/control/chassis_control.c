@@ -33,8 +33,8 @@
 #define CHASSIS_HEADING_ERR_DEADBAND_DEG    0.4f
 #define CHASSIS_HEADING_GYRO_DEADBAND_RADPS 0.010f
 
-#define CHASSIS_STARTUP_LOCK_TIME_S         2.0f
-#define CHASSIS_STARTUP_YAW_STABLE_DEG      4.0f
+#define CHASSIS_STARTUP_LOCK_TIME_S         1.0f
+#define CHASSIS_STARTUP_YAW_STABLE_DEG      8.0f
 
 #define CHASSIS_REMOTE_AXIS_MAX             1600.0f
 #define CHASSIS_REMOTE_DEADBAND             100.0f
@@ -62,10 +62,10 @@ static const float s_wheel_pid_ki[4] =
 
 static const float s_wheel_pid_kd[4] =
 {
-    0.0f,
-    0.0f,
-    0.0f,
-    0.0f,
+    8.0f,    /* LF: light damping to suppress Kp-induced buzz */
+    8.0f,    /* RF */
+    8.0f,    /* LB */
+    8.0f,    /* RB */
 };
 
 #define CHASSIS_TUNE_AXIS_ON                0.55f
@@ -126,6 +126,7 @@ typedef struct
     float position_target_right_m;
     float last_attitude_yaw_deg;
     float yaw_lock_continuous_deg;
+    uint16 coast_remaining_ms;   /* beacon pass-over coast window (ms) */
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -275,6 +276,7 @@ static float chassis_feedforward_duty(uint8 wheel, float target_speed_mps)
 {
     float abs_speed;
     float duty;
+    float ff_scale;
 
     if (fabsf(target_speed_mps) < 0.001f)
     {
@@ -282,7 +284,11 @@ static float chassis_feedforward_duty(uint8 wheel, float target_speed_mps)
     }
 
     abs_speed = fabsf(target_speed_mps);
-    duty = s_wheel_ff_ks_duty[wheel] + (HW_MOTOR_FF_KV_DUTY_PER_MPS * abs_speed);
+    /* Fade the static-friction term in below HW_MOTOR_FF_FADE_MPS so the
+     * feedforward is continuous through zero instead of jumping by the full
+     * static-friction duty. Removes the "thunk" at deadband entry/exit. */
+    ff_scale = (abs_speed < HW_MOTOR_FF_FADE_MPS) ? (abs_speed / HW_MOTOR_FF_FADE_MPS) : 1.0f;
+    duty = (s_wheel_ff_ks_duty[wheel] * ff_scale) + (HW_MOTOR_FF_KV_DUTY_PER_MPS * abs_speed);
 
     return (target_speed_mps > 0.0f) ? duty : -duty;
 }
@@ -363,7 +369,7 @@ static void chassis_startup_lock_step(float yaw_deg, float gyro_z_radps, float d
     g_runtime.startup_gyro_sum_radps += gyro_z_radps;
     g_runtime.startup_lock_samples++;
 
-    if (g_runtime.startup_lock_elapsed_s >= 2.0f)
+    if (g_runtime.startup_lock_elapsed_s >= CHASSIS_STARTUP_LOCK_TIME_S)
     {
         g_runtime.yaw_lock_continuous_deg = g_runtime.startup_reference_yaw_deg;
         g_runtime.yaw_lock_deg = chassis_wrap_deg(g_runtime.yaw_lock_continuous_deg);
@@ -1136,6 +1142,11 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
     g_status.drone_beacon_conf_permille = g_runtime.drone.beacon_conf_permille;
 }
 
+void chassis_control_set_coast(uint16 remaining_ms)
+{
+    g_runtime.coast_remaining_ms = remaining_ms;
+}
+
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude)
 {
     float yaw_deg = g_runtime.last_yaw_deg;
@@ -1435,6 +1446,24 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
             }
+            else if (g_runtime.coast_remaining_ms > 0U)
+            {
+                /* Beacon pass-over coast: the beacon went under the car.
+                 * Hold the last body velocity (no slew decay) so the car keeps
+                 * moving to clear and extinguish the beacon. Only coast if the
+                 * car was actually moving; a stopped car has nothing to coast. */
+                const float coast_speed = sqrtf((g_runtime.cmd_vx_body_state * g_runtime.cmd_vx_body_state) +
+                                                (g_runtime.cmd_vy_body_state * g_runtime.cmd_vy_body_state));
+                if (coast_speed >= HW_BEACON_COAST_MIN_VEL_MPS)
+                {
+                    vx_body_cmd = g_runtime.cmd_vx_body_state;
+                    vy_body_cmd = g_runtime.cmd_vy_body_state;
+                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+                    command_active = 1U;
+                    g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+                    g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
+                }
+            }
         } break;
 
         case CHASSIS_MODE_SAFE_STOP:
@@ -1453,6 +1482,22 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             g_status.tune_target_mps = 0.0f;
             g_status.tune_selected_value = 0.0f;
             g_status.tune_selected_step = 0.0f;
+
+            /* Yaw hold stays active even in SAFE_STOP so the car auto-returns
+             * to its locked heading when disturbed (e.g. hand-rotated). This is
+             * required for accurate drone-remote movement: the heading lock
+             * must persist from power-on, in motion and at rest. Only rotation
+             * correction is allowed here; translation stays zero so the car
+             * never drifts without an explicit command. */
+            if (g_runtime.yaw_lock_valid)
+            {
+                vx_body_cmd = 0.0f;
+                vy_body_cmd = 0.0f;
+                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
+                command_active = 1U;
+                g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+                g_status.heading_valid = 1U;
+            }
         } break;
     }
 
@@ -1520,7 +1565,10 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                         (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ||
                         ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
                          g_status.drone_fresh &&
-                         g_status.drone_move_valid));
+                         (g_status.drone_move_valid || (g_runtime.coast_remaining_ms > 0U))) ||
+                        ((g_status.mode == CHASSIS_MODE_SAFE_STOP) &&
+                         g_runtime.yaw_lock_valid &&
+                         command_active));
 
     hw_imu_set_stationary_hint(chassis_stationary_hint_from_status());
 }

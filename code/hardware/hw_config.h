@@ -26,7 +26,7 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       0.95f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-#define HW_DRONE_DEADBAND_PX                  12.0f
+#define HW_DRONE_DEADBAND_PX                  4.0f
 #define HW_DRONE_PX_NORM                      160.0f
 #define HW_DRONE_MAX_FWD_MPS                  0.80f
 #define HW_DRONE_MAX_RIGHT_MPS                0.80f
@@ -36,6 +36,11 @@
  * A4 err_fwd drives +Y, err_right drives +X. */
 #define HW_DRONE_RIGHT_SIGN                   (1.0f)
 #define HW_DRONE_REMOTE_OVERRIDE_RAW          260
+/* Beacon pass-over coast: when the beacon disappears (move_valid 1->0) but the
+ * drone link is still fresh, the car was physically over the beacon. Hold the
+ * last velocity briefly so the car clears the beacon and extinguishes it. */
+#define HW_BEACON_COAST_MS                    200U
+#define HW_BEACON_COAST_MIN_VEL_MPS           0.10f
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
 #define HW_WHEEL_TUNE_KP_STEP                 10.0f
@@ -49,6 +54,7 @@
 /* 轻量静摩擦补偿，避免低速纯 PID 起步太软 */
 #define HW_MOTOR_FF_KS_DUTY                   220.0f
 #define HW_MOTOR_FF_KV_DUTY_PER_MPS           1200.0f
+#define HW_MOTOR_FF_FADE_MPS                  0.05f   /* static-friction fade-in threshold */
 
 /* =========================
  * IMU backend selection
@@ -56,9 +62,9 @@
 #define HW_IMU_MODEL_ICM45686                 0U
 #define HW_IMU_MODEL_IMU660RB                 1U
 
-/* Default to the new SPI IMU backend, keep the old one as a fallback. */
+/* Default to the ICM45686 backend. */
 #ifndef HW_IMU_MODEL
-#define HW_IMU_MODEL                          HW_IMU_MODEL_IMU660RB
+#define HW_IMU_MODEL                          HW_IMU_MODEL_ICM45686
 #endif
 
 /*

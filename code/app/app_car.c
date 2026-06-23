@@ -22,6 +22,8 @@ typedef struct
     uint16 remote_age_ms;
     uint16 drone_age_ms;
     chassis_mode_t mode;
+    uint16 coast_remaining_ms;    /* beacon pass-over coast window */
+    uint8 last_drone_move_valid;  /* for falling-edge detection */
 } app_car_runtime_t;
 
 static app_car_runtime_t g_app_runtime;
@@ -62,6 +64,30 @@ static void app_update_mode(void)
 {
     const uint8 remote_override = app_remote_manual_override();
     const uint8 drone_move_valid = app_drone_move_valid();
+    const uint8 drone_fresh = app_drone_fresh();
+
+    /* Beacon pass-over coast: detect move_valid falling edge while the link is
+     * still fresh. That means the beacon physically went under the car (the
+     * drone can still see the V-lamp but the beacon is occluded). Start a
+     * coast window so the car keeps moving to extinguish the beacon. If the
+     * link itself dropped, do NOT coast (safe stop instead). */
+    if ((g_app_runtime.last_drone_move_valid != 0U) && (drone_move_valid == 0U) && (drone_fresh != 0U))
+    {
+        g_app_runtime.coast_remaining_ms = HW_BEACON_COAST_MS;
+    }
+    g_app_runtime.last_drone_move_valid = drone_move_valid;
+
+    if (g_app_runtime.coast_remaining_ms > 0U)
+    {
+        if (g_app_runtime.coast_remaining_ms > HW_CONTROL_PERIOD_MS)
+        {
+            g_app_runtime.coast_remaining_ms = (uint16)(g_app_runtime.coast_remaining_ms - HW_CONTROL_PERIOD_MS);
+        }
+        else
+        {
+            g_app_runtime.coast_remaining_ms = 0U;
+        }
+    }
 
     if (g_chassis_wheel_pid_tune_enabled)
     {
@@ -73,8 +99,10 @@ static void app_update_mode(void)
     {
         g_app_runtime.mode = CHASSIS_MODE_MANUAL;
     }
-    else if (drone_move_valid)
+    else if (drone_move_valid || (g_app_runtime.coast_remaining_ms > 0U))
     {
+        /* Hold DRONE_TRACK during the coast window so the chassis can keep
+         * driving through the beacon instead of hard-stopping. */
         g_app_runtime.mode = CHASSIS_MODE_DRONE_TRACK;
     }
     else
@@ -139,6 +167,7 @@ void app_car_step(void)
     chassis_control_set_mode(g_app_runtime.mode);
     chassis_control_set_remote(&g_app_runtime.remote, app_remote_fresh(), g_app_runtime.remote_age_ms);
     chassis_control_set_drone(&g_app_runtime.drone, app_drone_fresh(), g_app_runtime.drone_age_ms);
+    chassis_control_set_coast(g_app_runtime.coast_remaining_ms);
     chassis_control_step(enc_counts, HW_CONTROL_PERIOD_S, &attitude);
 
     status = chassis_control_get_status();
