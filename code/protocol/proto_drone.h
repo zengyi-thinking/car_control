@@ -5,7 +5,7 @@
 
 #define DRONE_FRAME_HEAD                 0xA4U
 #define DRONE_FRAME_TAIL                 0x55U
-#define DRONE_FRAME_SIZE                 18U
+#define DRONE_FRAME_SIZE                 16U
 #define DRONE_FRAME_SIZE_MAX             DRONE_FRAME_SIZE
 
 #define PROTO_DRONE_FLAG_HAS_VLAMP       (1U << 0)
@@ -22,7 +22,6 @@ typedef struct
     int16 vb_y_px;
     uint16 v_conf_permille;
     uint16 beacon_conf_permille;
-    uint16 battery_centi_v;
     uint8 flags;
     uint8 fresh;
 } proto_drone_data_t;

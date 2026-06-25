@@ -68,8 +68,7 @@ static uint8 proto_drone_try_parse(proto_drone_data_t *out)
     out->beacon_y_px = proto_drone_read_i16(rx_buf[7], rx_buf[8]);
     out->v_conf_permille = proto_drone_read_u16(rx_buf[9], rx_buf[10]);
     out->beacon_conf_permille = proto_drone_read_u16(rx_buf[11], rx_buf[12]);
-    out->battery_centi_v = proto_drone_read_u16(rx_buf[13], rx_buf[14]);
-    out->flags = rx_buf[15];
+    out->flags = rx_buf[13];
     if((out->flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U)
     {
         out->vb_x_px = (int16)(out->beacon_x_px - out->v_x_px);

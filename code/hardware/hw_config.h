@@ -9,7 +9,7 @@
 #define HW_MOTOR_DUTY_MAX                     10000
 
 #define HW_REMOTE_TIMEOUT_MS                  150U
-#define HW_DRONE_TIMEOUT_MS                   150U
+#define HW_DRONE_TIMEOUT_MS                   280U
 
 #define HW_ENCODER_DISPLAY_DEADBAND           3
 
@@ -26,21 +26,28 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       0.95f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-#define HW_DRONE_DEADBAND_PX                  4.0f
-#define HW_DRONE_PX_NORM                      160.0f
-#define HW_DRONE_MAX_FWD_MPS                  0.80f
-#define HW_DRONE_MAX_RIGHT_MPS                0.80f
+#define HW_DRONE_DEADBAND_PX                  8.0f
+#define HW_DRONE_PX_NORM                      80.0f
+#define HW_DRONE_MIN_FWD_MPS                  0.22f
+#define HW_DRONE_MIN_RIGHT_MPS                0.22f
+#define HW_DRONE_MAX_FWD_MPS                  0.90f
+#define HW_DRONE_MAX_RIGHT_MPS                0.90f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.40f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
 /* Car reference frame for the drone link:
  *   +Y = forward, +X = right.
- * A4 err_fwd drives +Y, err_right drives +X. */
+ * A4 carries raw V/B pixels; VBX drives +X and VBY drives +Y. */
 #define HW_DRONE_RIGHT_SIGN                   (1.0f)
 #define HW_DRONE_REMOTE_OVERRIDE_RAW          260
 /* Beacon pass-over coast: when the beacon disappears (move_valid 1->0) but the
  * drone link is still fresh, the car was physically over the beacon. Hold the
  * last velocity briefly so the car clears the beacon and extinguishes it. */
-#define HW_BEACON_COAST_MS                    200U
-#define HW_BEACON_COAST_MIN_VEL_MPS           0.10f
+#define HW_BEACON_COAST_MS                    750U
+#define HW_BEACON_COAST_MIN_VEL_MPS           0.06f
+#define HW_BEACON_STRIKE_ZONE_PX              36.0f
+#define HW_BEACON_STRIKE_CROSS_ZONE_PX        64.0f
+#define HW_BEACON_STRIKE_SPEED_MPS            0.85f
+#define HW_BEACON_STRIKE_MS                   1800U
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
 #define HW_WHEEL_TUNE_KP_STEP                 10.0f

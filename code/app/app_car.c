@@ -65,15 +65,26 @@ static void app_update_mode(void)
     const uint8 remote_override = app_remote_manual_override();
     const uint8 drone_move_valid = app_drone_move_valid();
     const uint8 drone_fresh = app_drone_fresh();
+    const uint8 drone_has_v = (uint8)((drone_fresh != 0U) &&
+                                      ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U));
+    const uint8 drone_has_b = (uint8)((drone_fresh != 0U) &&
+                                      ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_BEACON) != 0U));
 
     /* Beacon pass-over coast: detect move_valid falling edge while the link is
      * still fresh. That means the beacon physically went under the car (the
      * drone can still see the V-lamp but the beacon is occluded). Start a
      * coast window so the car keeps moving to extinguish the beacon. If the
      * link itself dropped, do NOT coast (safe stop instead). */
-    if ((g_app_runtime.last_drone_move_valid != 0U) && (drone_move_valid == 0U) && (drone_fresh != 0U))
+    if ((g_app_runtime.last_drone_move_valid != 0U) &&
+        (drone_move_valid == 0U) &&
+        (drone_has_v != 0U) &&
+        (drone_has_b == 0U))
     {
         g_app_runtime.coast_remaining_ms = HW_BEACON_COAST_MS;
+    }
+    else if ((drone_fresh == 0U) || (drone_has_v == 0U))
+    {
+        g_app_runtime.coast_remaining_ms = 0U;
     }
     g_app_runtime.last_drone_move_valid = drone_move_valid;
 
