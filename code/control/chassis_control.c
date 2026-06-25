@@ -92,8 +92,7 @@ volatile float g_chassis_wheel_pid_tune_target_mps = HW_WHEEL_TUNE_TARGET_MPS;
 typedef enum
 {
     CHASSIS_DRONE_TRACK_APPROACH = 0,
-    CHASSIS_DRONE_TRACK_STRIKE = 1,
-    CHASSIS_DRONE_TRACK_COAST = 2,
+    CHASSIS_DRONE_TRACK_COAST = 1,
 } chassis_drone_track_state_t;
 
 static const float s_wheel_ff_ks_duty[4] =
@@ -146,14 +145,10 @@ typedef struct
     uint8 drone_track_state;
     uint8 drone_error_filter_valid;
     uint8 drone_last_error_valid;
-    float drone_error_x_px;
+    float drone_error_x_px;       /* filtered pixel error (P + filter state) */
     float drone_error_y_px;
-    float drone_last_error_x_px;
+    float drone_last_error_x_px;  /* previous-tick filtered error (D term) */
     float drone_last_error_y_px;
-    uint16 beacon_strike_remaining_ms;
-    uint8 beacon_strike_dir_valid;
-    float beacon_strike_dir_fwd;
-    float beacon_strike_dir_right;
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -272,10 +267,6 @@ static void chassis_reset_command_states(void)
     g_runtime.drone_error_y_px = 0.0f;
     g_runtime.drone_last_error_x_px = 0.0f;
     g_runtime.drone_last_error_y_px = 0.0f;
-    g_runtime.beacon_strike_remaining_ms = 0U;
-    g_runtime.beacon_strike_dir_valid = 0U;
-    g_runtime.beacon_strike_dir_fwd = 0.0f;
-    g_runtime.beacon_strike_dir_right = 0.0f;
 }
 
 static void chassis_seed_command_states_from_odometry(void)
@@ -721,21 +712,41 @@ static float chassis_drone_distance_to_speed(float dist_px)
     const float max_speed_mps = 0.5f * (HW_DRONE_MAX_FWD_MPS + HW_DRONE_MAX_RIGHT_MPS);
     float span_px;
     float progress;
+    float near_max_speed_mps;
 
     if ((dist_px <= HW_DRONE_DEADBAND_PX) || (max_speed_mps <= 0.0f))
     {
         return 0.0f;
     }
 
-    span_px = HW_DRONE_PX_NORM - HW_DRONE_DEADBAND_PX;
+    /* Near-zone gain boost: between DEADBAND and NEAR_GAIN_BOOST_PX, scale the
+     * top of the curve by NEAR_GAIN_MULT so the car keeps closing in fast at
+     * close range instead of stalling. The boost only raises the *target* of
+     * the near segment; the far segment is clamped to the global max. */
+    near_max_speed_mps = chassis_clamp(max_speed_mps * HW_DRONE_NEAR_GAIN_MULT,
+                                       min_speed_mps, max_speed_mps);
+
+    if (dist_px <= HW_DRONE_NEAR_GAIN_BOOST_PX)
+    {
+        span_px = HW_DRONE_NEAR_GAIN_BOOST_PX - HW_DRONE_DEADBAND_PX;
+        if (span_px < 1.0f)
+        {
+            span_px = 1.0f;
+        }
+        progress = (dist_px - HW_DRONE_DEADBAND_PX) / span_px;
+        progress = chassis_clamp(progress, 0.0f, 1.0f);
+        return min_speed_mps + ((near_max_speed_mps - min_speed_mps) * progress);
+    }
+
+    span_px = HW_DRONE_PX_NORM - HW_DRONE_NEAR_GAIN_BOOST_PX;
     if (span_px < 1.0f)
     {
         span_px = 1.0f;
     }
-    progress = (dist_px - HW_DRONE_DEADBAND_PX) / span_px;
+    progress = (dist_px - HW_DRONE_NEAR_GAIN_BOOST_PX) / span_px;
     progress = chassis_clamp(progress, 0.0f, 1.0f);
 
-    return min_speed_mps + ((max_speed_mps - min_speed_mps) * progress);
+    return near_max_speed_mps + ((max_speed_mps - near_max_speed_mps) * progress);
 }
 
 static void chassis_drone_filter_error(float raw_x_px, float raw_y_px, float *out_x_px, float *out_y_px)
@@ -764,28 +775,6 @@ static void chassis_drone_filter_error(float raw_x_px, float raw_y_px, float *ou
     }
 }
 
-static uint8 chassis_drone_error_crossed(float err_x_px, float err_y_px, float dist_px)
-{
-    float last_dist;
-    float dot;
-
-    if (g_runtime.drone_last_error_valid == 0U)
-    {
-        return 0U;
-    }
-
-    last_dist = chassis_drone_error_distance(g_runtime.drone_last_error_x_px,
-                                             g_runtime.drone_last_error_y_px);
-    if ((dist_px > HW_BEACON_STRIKE_CROSS_ZONE_PX) || (last_dist > HW_BEACON_STRIKE_CROSS_ZONE_PX))
-    {
-        return 0U;
-    }
-
-    dot = (err_x_px * g_runtime.drone_last_error_x_px) +
-          (err_y_px * g_runtime.drone_last_error_y_px);
-    return (dot <= 0.0f) ? 1U : 0U;
-}
-
 static void chassis_drone_store_last_error(float err_x_px, float err_y_px)
 {
     g_runtime.drone_last_error_x_px = err_x_px;
@@ -793,78 +782,78 @@ static void chassis_drone_store_last_error(float err_x_px, float err_y_px)
     g_runtime.drone_last_error_valid = 1U;
 }
 
-static void chassis_beacon_strike_update_direction(float vx_body_cmd, float vy_body_cmd)
+/* PD closed-loop beacon tracking command (no STRIKE open-loop dash).
+ *   P : speed magnitude from distance (chassis_drone_distance_to_speed),
+ *       direction = unit pixel-error vector, updated every tick.
+ *   D : -KD * d(filtered_error)/dt, brakes when the pixel distance stops
+ *       shrinking (overshoot / sideways drift), guaranteeing monotonic
+ *       convergence toward the beacon.
+ * The summed P+D velocity is clamped to the global max, then mapped to body
+ * forward/right with the hardware sign conventions. */
+static void chassis_drone_track_compute_command(float err_x_px,
+                                                float err_y_px,
+                                                float dist_px,
+                                                float dt_s,
+                                                float *vx_body_cmd,
+                                                float *vy_body_cmd)
 {
-    const float speed = sqrtf((vx_body_cmd * vx_body_cmd) + (vy_body_cmd * vy_body_cmd));
+    const float max_speed_mps = 0.5f * (HW_DRONE_MAX_FWD_MPS + HW_DRONE_MAX_RIGHT_MPS);
+    float speed_p;
+    float dir_x;
+    float dir_y;
+    float vp_x;
+    float vp_y;
+    float vd_x;
+    float vd_y;
+    float v_x;
+    float v_y;
+    float v_norm;
 
-    if (speed < HW_BEACON_COAST_MIN_VEL_MPS)
+    if ((vx_body_cmd == 0) || (vy_body_cmd == 0) || (dt_s <= 0.0f))
     {
         return;
     }
-
-    g_runtime.beacon_strike_dir_fwd = vx_body_cmd / speed;
-    g_runtime.beacon_strike_dir_right = vy_body_cmd / speed;
-    g_runtime.beacon_strike_dir_valid = 1U;
-}
-
-static void chassis_beacon_strike_seed_direction(float err_x_px, float err_y_px)
-{
-    const float dist_px = chassis_drone_error_distance(err_x_px, err_y_px);
 
     if (dist_px <= HW_DRONE_DEADBAND_PX)
     {
+        *vx_body_cmd = 0.0f;
+        *vy_body_cmd = 0.0f;
         return;
     }
 
-    g_runtime.beacon_strike_dir_fwd = HW_DRONE_FWD_SIGN * (err_y_px / dist_px);
-    g_runtime.beacon_strike_dir_right = HW_DRONE_RIGHT_SIGN * (err_x_px / dist_px);
-    g_runtime.beacon_strike_dir_valid = 1U;
-}
+    /* P term: unit direction * speed-from-distance. */
+    speed_p = chassis_drone_distance_to_speed(dist_px);
+    dir_x = err_x_px / dist_px;
+    dir_y = err_y_px / dist_px;
+    vp_x = dir_x * speed_p;
+    vp_y = dir_y * speed_p;
 
-static void chassis_beacon_strike_begin(float err_x_px, float err_y_px)
-{
-    if (g_runtime.beacon_strike_dir_valid == 0U)
+    /* D term: derivative of the filtered pixel error. Only active once a
+     * previous sample exists; sign is negative so a growing error brakes. */
+    vd_x = 0.0f;
+    vd_y = 0.0f;
+    if (g_runtime.drone_last_error_valid != 0U)
     {
-        chassis_beacon_strike_seed_direction(err_x_px, err_y_px);
+        vd_x = -HW_DRONE_TRACK_KD_MPS_PER_PXPS * ((err_x_px - g_runtime.drone_last_error_x_px) / dt_s);
+        vd_y = -HW_DRONE_TRACK_KD_MPS_PER_PXPS * ((err_y_px - g_runtime.drone_last_error_y_px) / dt_s);
     }
 
-    if (g_runtime.beacon_strike_dir_valid == 0U)
+    v_x = vp_x + vd_x;
+    v_y = vp_y + vd_y;
+
+    /* Clamp the combined vector magnitude to the global max so the D term can
+     * brake but cannot push the car faster than the P-curve ceiling. */
+    v_norm = sqrtf((v_x * v_x) + (v_y * v_y));
+    if (v_norm > max_speed_mps)
     {
-        return;
+        const float scale = max_speed_mps / v_norm;
+        v_x *= scale;
+        v_y *= scale;
     }
 
-    g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_STRIKE;
-    g_runtime.beacon_strike_remaining_ms = HW_BEACON_STRIKE_MS;
-}
-
-static void chassis_beacon_strike_tick(float *vx_body_cmd, float *vy_body_cmd)
-{
-    if ((vx_body_cmd == 0) || (vy_body_cmd == 0))
-    {
-        return;
-    }
-
-    if (((g_runtime.drone_track_state != CHASSIS_DRONE_TRACK_STRIKE) &&
-         (g_runtime.drone_track_state != CHASSIS_DRONE_TRACK_COAST))
-        || (g_runtime.beacon_strike_remaining_ms == 0U)
-        || (g_runtime.beacon_strike_dir_valid == 0U))
-    {
-        return;
-    }
-
-    *vx_body_cmd = g_runtime.beacon_strike_dir_fwd * HW_BEACON_STRIKE_SPEED_MPS;
-    *vy_body_cmd = g_runtime.beacon_strike_dir_right * HW_BEACON_STRIKE_SPEED_MPS;
-
-    if (g_runtime.beacon_strike_remaining_ms > HW_CONTROL_PERIOD_MS)
-    {
-        g_runtime.beacon_strike_remaining_ms =
-            (uint16)(g_runtime.beacon_strike_remaining_ms - HW_CONTROL_PERIOD_MS);
-    }
-    else
-    {
-        g_runtime.beacon_strike_remaining_ms = 0U;
-        g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
-    }
+    /* Map pixel-frame (x=right, y=forward) to body frame (vy>0 right, vx>0 fwd). */
+    *vx_body_cmd = HW_DRONE_FWD_SIGN * v_y;
+    *vy_body_cmd = HW_DRONE_RIGHT_SIGN * v_x;
 }
 
 static void chassis_position_move_reset(void)
@@ -1439,8 +1428,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
             g_runtime.drone_error_filter_valid = 0U;
             g_runtime.drone_last_error_valid = 0U;
-            g_runtime.beacon_strike_remaining_ms = 0U;
-            g_runtime.beacon_strike_dir_valid = 0U;
         }
 
         if (g_status.mode == CHASSIS_MODE_SAFE_STOP)
@@ -1462,8 +1449,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
             g_runtime.drone_error_filter_valid = 0U;
             g_runtime.drone_last_error_valid = 0U;
-            g_runtime.beacon_strike_remaining_ms = 0U;
-            g_runtime.beacon_strike_dir_valid = 0U;
             if (!g_runtime.yaw_lock_valid)
             {
                 chassis_reset_heading_controller(yaw_deg);
@@ -1643,7 +1628,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 float vb_x_px;
                 float vb_y_px;
                 float vb_dist_px;
-                float speed_mps;
 
                 chassis_drone_filter_error((float)g_runtime.drone.vb_x_px,
                                            (float)g_runtime.drone.vb_y_px,
@@ -1651,33 +1635,20 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                                            &vb_y_px);
                 vb_dist_px = chassis_drone_error_distance(vb_x_px, vb_y_px);
 
+                /* Always closed-loop: no STRIKE open-loop dash. The PD command
+                 * below keeps updating direction every tick from the live pixel
+                 * error, so the V-beacon pixel distance decreases monotonically. */
                 if (g_runtime.drone_track_state == CHASSIS_DRONE_TRACK_COAST)
                 {
                     g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
-                    g_runtime.beacon_strike_remaining_ms = 0U;
                 }
 
-                if (g_runtime.drone_track_state == CHASSIS_DRONE_TRACK_APPROACH)
-                {
-                    if ((vb_dist_px <= HW_BEACON_STRIKE_ZONE_PX) ||
-                        (chassis_drone_error_crossed(vb_x_px, vb_y_px, vb_dist_px) != 0U))
-                    {
-                        chassis_beacon_strike_begin(vb_x_px, vb_y_px);
-                    }
-                }
-
-                if (g_runtime.drone_track_state == CHASSIS_DRONE_TRACK_STRIKE)
-                {
-                    chassis_beacon_strike_tick(&vx_body_cmd, &vy_body_cmd);
-                }
-                else if (vb_dist_px > HW_DRONE_DEADBAND_PX)
-                {
-                    speed_mps = chassis_drone_distance_to_speed(vb_dist_px);
-                    vx_body_cmd = HW_DRONE_FWD_SIGN * (vb_y_px / vb_dist_px) * speed_mps;
-                    vy_body_cmd = HW_DRONE_RIGHT_SIGN * (vb_x_px / vb_dist_px) * speed_mps;
-                    chassis_beacon_strike_update_direction(vx_body_cmd, vy_body_cmd);
-                }
-
+                chassis_drone_track_compute_command(vb_x_px,
+                                                     vb_y_px,
+                                                     vb_dist_px,
+                                                     dt_s,
+                                                     &vx_body_cmd,
+                                                     &vy_body_cmd);
                 chassis_drone_store_last_error(vb_x_px, vb_y_px);
                 chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
@@ -1687,24 +1658,30 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             }
             else if (g_runtime.coast_remaining_ms > 0U)
             {
+                /* Beacon went under the car (occluded) while the link is still
+                 * fresh: hold the last closed-loop body velocity (no slew decay)
+                 * so the car physically overruns and extinguishes the beacon.
+                 * Direction is the last PD-corrected command, not a frozen dir.
+                 * If the held speed is below the dash floor (e.g. the loop had
+                 * already braked near the deadband), scale it up along its own
+                 * direction so the chassis has enough momentum to clear the lamp
+                 * housing instead of getting caught on the cover. */
                 g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_COAST;
-                if (g_runtime.beacon_strike_dir_valid != 0U)
                 {
-                    g_runtime.beacon_strike_remaining_ms = g_runtime.coast_remaining_ms;
-                    chassis_beacon_strike_tick(&vx_body_cmd, &vy_body_cmd);
-                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
-                    command_active = 1U;
-                    g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
-                    g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
-                }
-                else
-                {
-                    const float coast_speed = sqrtf((g_runtime.cmd_vx_body_state * g_runtime.cmd_vx_body_state) +
-                                                    (g_runtime.cmd_vy_body_state * g_runtime.cmd_vy_body_state));
+                    float coast_speed = sqrtf((g_runtime.cmd_vx_body_state * g_runtime.cmd_vx_body_state) +
+                                              (g_runtime.cmd_vy_body_state * g_runtime.cmd_vy_body_state));
                     if (coast_speed >= HW_BEACON_COAST_MIN_VEL_MPS)
                     {
-                        vx_body_cmd = g_runtime.cmd_vx_body_state;
-                        vy_body_cmd = g_runtime.cmd_vy_body_state;
+                        float cvx = g_runtime.cmd_vx_body_state;
+                        float cvy = g_runtime.cmd_vy_body_state;
+                        if (coast_speed < HW_BEACON_COAST_DASH_FLOOR_MPS)
+                        {
+                            const float scale = HW_BEACON_COAST_DASH_FLOOR_MPS / coast_speed;
+                            cvx *= scale;
+                            cvy *= scale;
+                        }
+                        vx_body_cmd = cvx;
+                        vy_body_cmd = cvy;
                         omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                         command_active = 1U;
                         g_status.target_yaw_deg = g_runtime.yaw_lock_deg;

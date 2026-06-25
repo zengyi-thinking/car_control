@@ -26,13 +26,21 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       0.95f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-#define HW_DRONE_DEADBAND_PX                  8.0f
-#define HW_DRONE_PX_NORM                      80.0f
-#define HW_DRONE_MIN_FWD_MPS                  0.22f
-#define HW_DRONE_MIN_RIGHT_MPS                0.22f
-#define HW_DRONE_MAX_FWD_MPS                  0.90f
-#define HW_DRONE_MAX_RIGHT_MPS                0.90f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.40f
+#define HW_DRONE_DEADBAND_PX                  5.0f
+#define HW_DRONE_PX_NORM                      150.0f
+#define HW_DRONE_MIN_FWD_MPS                  0.375f
+#define HW_DRONE_MIN_RIGHT_MPS                0.375f
+#define HW_DRONE_MAX_FWD_MPS                  0.94f
+#define HW_DRONE_MAX_RIGHT_MPS                0.94f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.50f
+/* PD position loop gains for drone beacon tracking (no I term: mecanum has no
+ * steady-state error to null, and integral windup risks overrunning the beacon).
+ *   P : distance -> speed curve (see chassis_drone_distance_to_speed).
+ *   D : -KD * d(pixel_err)/dt, damps overshoot and guarantees the V-beacon pixel
+ *       distance decreases monotonically (brakes when the error starts growing). */
+#define HW_DRONE_TRACK_KD_MPS_PER_PXPS        0.012f
+#define HW_DRONE_NEAR_GAIN_BOOST_PX           40.0f
+#define HW_DRONE_NEAR_GAIN_MULT               1.4f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
 /* Car reference frame for the drone link:
  *   +Y = forward, +X = right.
@@ -41,13 +49,16 @@
 #define HW_DRONE_REMOTE_OVERRIDE_RAW          260
 /* Beacon pass-over coast: when the beacon disappears (move_valid 1->0) but the
  * drone link is still fresh, the car was physically over the beacon. Hold the
- * last velocity briefly so the car clears the beacon and extinguishes it. */
+ * last closed-loop body velocity (no slew decay) so the car keeps moving to
+ * clear and extinguish the beacon. Direction is the last closed-loop command,
+ * not a frozen strike direction. Only coast if the car was actually moving.
+ * If the held speed is below the dash floor, scale it up along its direction so
+ * the car has enough momentum to overrun the lamp housing (avoids the chassis
+ * getting caught on the lamp cover at low speed). */
 #define HW_BEACON_COAST_MS                    750U
 #define HW_BEACON_COAST_MIN_VEL_MPS           0.06f
-#define HW_BEACON_STRIKE_ZONE_PX              36.0f
+#define HW_BEACON_COAST_DASH_FLOOR_MPS        0.60f
 #define HW_BEACON_STRIKE_CROSS_ZONE_PX        64.0f
-#define HW_BEACON_STRIKE_SPEED_MPS            0.85f
-#define HW_BEACON_STRIKE_MS                   1800U
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
 #define HW_WHEEL_TUNE_KP_STEP                 10.0f
