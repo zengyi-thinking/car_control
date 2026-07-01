@@ -93,6 +93,7 @@ typedef enum
 {
     CHASSIS_DRONE_TRACK_APPROACH = 0,
     CHASSIS_DRONE_TRACK_COAST = 1,
+    CHASSIS_DRONE_TRACK_STUCK_ESCAPE = 2,   /* 卡住自救: 沿前后轴强驱动挣脱 */
 } chassis_drone_track_state_t;
 
 static const float s_wheel_ff_ks_duty[4] =
@@ -149,6 +150,29 @@ typedef struct
     float drone_error_y_px;
     float drone_last_error_x_px;  /* previous-tick filtered error (D term) */
     float drone_last_error_y_px;
+    /* D 项抗噪: 视觉帧约 30Hz 但控制环 200Hz, 若 D 项用控制周期 (5ms) 做微分,
+     * 同一帧被复用 6-7 拍, 帧切换瞬间 d(err)/dt 会被放大 ~6.6 倍产生尖峰刹车。
+     * 用 drone_frame_dt_s 记录真实帧间隔 (新帧到达时锁定), D 项改用它做 dt,
+     * 消除采样率不匹配导致的微分尖峰。 */
+    float drone_frame_dt_s;        /* 真实帧间隔, 仅在新帧到达拍更新 */
+    uint16 drone_age_accum_ms;     /* 自上次新帧起的累积控制拍时间 */
+    uint8 drone_frame_fresh;       /* 本拍是否有新视觉帧 (边沿信号) */
+    /* 主动击灭承诺区: 当信标进入 CROSS_ZONE_PX 内且 V-B 单位向量方向翻转
+     * (信标刚从小车下方穿到另一侧), 锁定穿越瞬间的 body 速度方向继续滑行,
+     * 不让 PD 立即反向追, 打破"冲过头->反向追->又冲过头"的来回震荡。
+     * 锁定期间冻结 last_vb 用于退出判定; 由 move_valid 掉(COAST)/距离重新变大/超时退出。 */
+    float drone_last_vb_x_px;      /* 上一拍滤波后的 V-B 像素误差 (穿越检测用) */
+    float drone_last_vb_y_px;
+    uint8 drone_vb_valid;          /* 是否有有效的上一拍 vb (首次无 last_error 时为0) */
+    uint8 drone_cross_committed;   /* 当前是否处于穿越承诺锁定状态 */
+    uint16 drone_cross_commit_ms;  /* 锁定已持续时间(ms), 超时退出防永久锁死 */
+    /* 卡住检测 + 前后轴自救 (麦轮侧向碾灯罩必卡, 软件事后自救, 不依赖无人机)。
+     * stuck_detect_ms: 命令大但实测小(堵转)的持续累积时间, 达 STUCK_CONFIRM_MS 触发自救。
+     * stuck_escape_ms: 自救剩余时间, 倒计时到0回PD; escape_dir 取卡住前 cmd_vx 符号。 */
+    uint16 drone_stuck_detect_ms;
+    uint16 drone_stuck_escape_ms;
+    float drone_stuck_escape_dir;  /* 自救前后轴方向: +1前进 / -1后退 */
+    uint8 drone_stuck_retry_count; /* 同信标卡住重试计数, 超 STUCK_MAX_RETRY 放弃进SAFE_STOP */
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -267,6 +291,18 @@ static void chassis_reset_command_states(void)
     g_runtime.drone_error_y_px = 0.0f;
     g_runtime.drone_last_error_x_px = 0.0f;
     g_runtime.drone_last_error_y_px = 0.0f;
+    g_runtime.drone_frame_dt_s = 0.033f;       /* 默认假设 30Hz 视觉帧 */
+    g_runtime.drone_age_accum_ms = 0U;
+    g_runtime.drone_frame_fresh = 0U;
+    g_runtime.drone_last_vb_x_px = 0.0f;
+    g_runtime.drone_last_vb_y_px = 0.0f;
+    g_runtime.drone_vb_valid = 0U;
+    g_runtime.drone_cross_committed = 0U;
+    g_runtime.drone_cross_commit_ms = 0U;
+    g_runtime.drone_stuck_detect_ms = 0U;
+    g_runtime.drone_stuck_escape_ms = 0U;
+    g_runtime.drone_stuck_escape_dir = 1.0f;
+    g_runtime.drone_stuck_retry_count = 0U;
 }
 
 static void chassis_seed_command_states_from_odometry(void)
@@ -709,7 +745,10 @@ static float chassis_drone_error_distance(float err_x_px, float err_y_px)
 static float chassis_drone_distance_to_speed(float dist_px)
 {
     const float min_speed_mps = 0.5f * (HW_DRONE_MIN_FWD_MPS + HW_DRONE_MIN_RIGHT_MPS);
-    const float max_speed_mps = 0.5f * (HW_DRONE_MAX_FWD_MPS + HW_DRONE_MAX_RIGHT_MPS);
+    /* Ceiling 用前后/侧向较大值, 让各向异性由末尾椭圆 clamp 控制;
+     * 若取平均, 侧向 (MAX_RIGHT) 会被软件拉低, 与麦轮侧向需要更强命令相悖。 */
+    const float max_speed_mps = (HW_DRONE_MAX_FWD_MPS > HW_DRONE_MAX_RIGHT_MPS)
+                              ? HW_DRONE_MAX_FWD_MPS : HW_DRONE_MAX_RIGHT_MPS;
     float span_px;
     float progress;
     float near_max_speed_mps;
@@ -722,20 +761,27 @@ static float chassis_drone_distance_to_speed(float dist_px)
     /* Near-zone gain boost: between DEADBAND and NEAR_GAIN_BOOST_PX, scale the
      * top of the curve by NEAR_GAIN_MULT so the car keeps closing in fast at
      * close range instead of stalling. The boost only raises the *target* of
-     * the near segment; the far segment is clamped to the global max. */
+     * the near segment; the far segment is clamped to the global max.
+     * 末端地板修正 (一次性踩灭): 原曲线下限用 min_speed (0.375), 导致到达正上方时
+     * 只剩 0.375 m/s 动量, 不足以让底盘整个压过灯罩, 依赖后续 COAST/dash floor 补救。
+     * 改为下限 = max_speed * NEAR_FLOOR_FRAC (~0.80), 让到达时仍有满动量冲过。
+     * 麦轮无静差, 不需要 I 项追精度; 瓶颈是末端动量, 不是稳态误差。 */
     near_max_speed_mps = chassis_clamp(max_speed_mps * HW_DRONE_NEAR_GAIN_MULT,
                                        min_speed_mps, max_speed_mps);
-
-    if (dist_px <= HW_DRONE_NEAR_GAIN_BOOST_PX)
     {
-        span_px = HW_DRONE_NEAR_GAIN_BOOST_PX - HW_DRONE_DEADBAND_PX;
-        if (span_px < 1.0f)
+        const float near_floor_mps = chassis_clamp(max_speed_mps * HW_DRONE_NEAR_FLOOR_FRAC,
+                                                   min_speed_mps, near_max_speed_mps);
+        if (dist_px <= HW_DRONE_NEAR_GAIN_BOOST_PX)
         {
-            span_px = 1.0f;
+            span_px = HW_DRONE_NEAR_GAIN_BOOST_PX - HW_DRONE_DEADBAND_PX;
+            if (span_px < 1.0f)
+            {
+                span_px = 1.0f;
+            }
+            progress = (dist_px - HW_DRONE_DEADBAND_PX) / span_px;
+            progress = chassis_clamp(progress, 0.0f, 1.0f);
+            return near_floor_mps + ((near_max_speed_mps - near_floor_mps) * progress);
         }
-        progress = (dist_px - HW_DRONE_DEADBAND_PX) / span_px;
-        progress = chassis_clamp(progress, 0.0f, 1.0f);
-        return min_speed_mps + ((near_max_speed_mps - min_speed_mps) * progress);
     }
 
     span_px = HW_DRONE_PX_NORM - HW_DRONE_NEAR_GAIN_BOOST_PX;
@@ -782,6 +828,48 @@ static void chassis_drone_store_last_error(float err_x_px, float err_y_px)
     g_runtime.drone_last_error_valid = 1U;
 }
 
+/* 卡住检测: 用上一拍命令速度 (g_status.cmd_vx/vy_body_mps, 上一拍末尾写入) 与当前实测平移速度
+ * 比较。命令大但实测小 = 堵转, 持续 STUCK_CONFIRM_MS 判定卡住, 返回1并启动自救。
+ * 自救期间(escape_ms>0) 不再累积检测, 由调用者倒计时退出。
+ * move_invalid 或实测恢复 -> 清检测计数, 避免瞬时打滑/静止误判。 */
+static uint8 chassis_drone_update_stuck_detection(uint8 move_valid)
+{
+    if ((move_valid == 0U) || (g_runtime.drone_stuck_escape_ms > 0U))
+    {
+        g_runtime.drone_stuck_detect_ms = 0U;
+        return 0U;
+    }
+
+    {
+        const float cmd_norm = sqrtf((g_status.cmd_vx_body_mps * g_status.cmd_vx_body_mps)
+                                   + (g_status.cmd_vy_body_mps * g_status.cmd_vy_body_mps));
+        const float meas_norm = sqrtf((g_runtime.odom.vx_body_mps * g_runtime.odom.vx_body_mps)
+                                    + (g_runtime.odom.vy_body_mps * g_runtime.odom.vy_body_mps));
+
+        if ((cmd_norm > HW_BEACON_STUCK_CMD_MIN_MPS) && (meas_norm < HW_BEACON_STUCK_MEAS_MAX_MPS))
+        {
+            if (g_runtime.drone_stuck_detect_ms < 0xFFFFU)
+            {
+                g_runtime.drone_stuck_detect_ms = (uint16)(g_runtime.drone_stuck_detect_ms + HW_CONTROL_PERIOD_MS);
+            }
+            if (g_runtime.drone_stuck_detect_ms >= HW_BEACON_STUCK_CONFIRM_MS)
+            {
+                /* 触发卡住: 锁定自救方向(取上一拍 cmd_vx 符号, 几近静止默认前进)并启动自救窗口。 */
+                const float vx_sign = (g_status.cmd_vx_body_mps >= 0.0f) ? 1.0f : -1.0f;
+                g_runtime.drone_stuck_escape_dir = vx_sign;
+                g_runtime.drone_stuck_escape_ms = HW_BEACON_ESCAPE_MS;
+                g_runtime.drone_stuck_detect_ms = 0U;
+                return 1U;
+            }
+        }
+        else
+        {
+            g_runtime.drone_stuck_detect_ms = 0U;   /* 实测恢复或命令不足, 清零 */
+        }
+    }
+    return 0U;
+}
+
 /* PD closed-loop beacon tracking command (no STRIKE open-loop dash).
  *   P : speed magnitude from distance (chassis_drone_distance_to_speed),
  *       direction = unit pixel-error vector, updated every tick.
@@ -797,7 +885,6 @@ static void chassis_drone_track_compute_command(float err_x_px,
                                                 float *vx_body_cmd,
                                                 float *vy_body_cmd)
 {
-    const float max_speed_mps = 0.5f * (HW_DRONE_MAX_FWD_MPS + HW_DRONE_MAX_RIGHT_MPS);
     float speed_p;
     float dir_x;
     float dir_y;
@@ -807,7 +894,7 @@ static void chassis_drone_track_compute_command(float err_x_px,
     float vd_y;
     float v_x;
     float v_y;
-    float v_norm;
+    float norm_ell;
 
     if ((vx_body_cmd == 0) || (vy_body_cmd == 0) || (dt_s <= 0.0f))
     {
@@ -816,8 +903,26 @@ static void chassis_drone_track_compute_command(float err_x_px,
 
     if (dist_px <= HW_DRONE_DEADBAND_PX)
     {
-        *vx_body_cmd = 0.0f;
-        *vy_body_cmd = 0.0f;
+        /* 信标进入正下方 deadband 后不归零, 而是沿最后方向保持最低巡航速度,
+         * 让车平滑冲过信标正下方, 避免"减速到0→信标丢失→被COAST拽起"的顿挫。
+         * 方向取进入 deadband 前最后的单位误差向量 (无误差向量时退化为纯前进,
+         * 这是信标在小车正下方最常见的几何), 速度取前后/侧向最低速度的合成。 */
+        float last_dir_x = 0.0f;
+        float last_dir_y = 1.0f;
+        const float last_err_mag = sqrtf((g_runtime.drone_last_error_x_px * g_runtime.drone_last_error_x_px)
+                                       + (g_runtime.drone_last_error_y_px * g_runtime.drone_last_error_y_px));
+        if (last_err_mag > 0.5f)
+        {
+            last_dir_x = g_runtime.drone_last_error_x_px / last_err_mag;
+            last_dir_y = g_runtime.drone_last_error_y_px / last_err_mag;
+        }
+        const float min_fwd = HW_DRONE_MIN_FWD_MPS * fabsf(last_dir_y);
+        const float min_right = HW_DRONE_MIN_RIGHT_MPS * fabsf(last_dir_x);
+        const float min_speed = sqrtf((min_fwd * min_fwd) + (min_right * min_right));
+        v_x = last_dir_x * min_speed;
+        v_y = last_dir_y * min_speed;
+        *vx_body_cmd = HW_DRONE_FWD_SIGN * v_y;
+        *vy_body_cmd = HW_DRONE_RIGHT_SIGN * v_x;
         return;
     }
 
@@ -829,31 +934,101 @@ static void chassis_drone_track_compute_command(float err_x_px,
     vp_y = dir_y * speed_p;
 
     /* D term: derivative of the filtered pixel error. Only active once a
-     * previous sample exists; sign is negative so a growing error brakes. */
+     * previous sample exists; sign is negative so a growing error brakes.
+     * 抗噪: 只在真实视觉帧到达拍 (drone_frame_fresh) 计算微分, 且 dt 用真实帧间隔
+     * (drone_frame_dt_s) 而非控制周期。同一帧被多个控制拍复用时不更新 D 项,
+     * 消除 200Hz 控制环对 30Hz 信号做微分产生的尖峰刹车。 */
     vd_x = 0.0f;
     vd_y = 0.0f;
-    if (g_runtime.drone_last_error_valid != 0U)
+    if ((g_runtime.drone_last_error_valid != 0U) && (g_runtime.drone_frame_fresh != 0U)
+        && (g_runtime.drone_frame_dt_s > 0.001f))
     {
-        vd_x = -HW_DRONE_TRACK_KD_MPS_PER_PXPS * ((err_x_px - g_runtime.drone_last_error_x_px) / dt_s);
-        vd_y = -HW_DRONE_TRACK_KD_MPS_PER_PXPS * ((err_y_px - g_runtime.drone_last_error_y_px) / dt_s);
+        const float frame_dt = g_runtime.drone_frame_dt_s;
+        vd_x = -HW_DRONE_TRACK_KD_MPS_PER_PXPS * ((err_x_px - g_runtime.drone_last_error_x_px) / frame_dt);
+        vd_y = -HW_DRONE_TRACK_KD_MPS_PER_PXPS * ((err_y_px - g_runtime.drone_last_error_y_px) / frame_dt);
     }
 
     v_x = vp_x + vd_x;
     v_y = vp_y + vd_y;
 
-    /* Clamp the combined vector magnitude to the global max so the D term can
-     * brake but cannot push the car faster than the P-curve ceiling. */
-    v_norm = sqrtf((v_x * v_x) + (v_y * v_y));
-    if (v_norm > max_speed_mps)
+    /* 各向异性椭圆 clamp: (v_x/MAX_RIGHT)^2 + (v_y/MAX_FWD)^2 <= 1。
+     * v_x 是像素侧向误差->body 侧向 (right), 受 MAX_RIGHT 约束;
+     * v_y 是像素前后误差->body 前后 (forward), 受 MAX_FWD 约束。
+     * 用椭圆而非各向同性圆, 让侧向能吃满 MAX_RIGHT, 前后被压到 MAX_FWD。
+     * D 项可刹车但不能把车推过 P 曲线 ceiling, 椭圆对 D 项同样有效。 */
+    norm_ell = (v_x / HW_DRONE_MAX_RIGHT_MPS) * (v_x / HW_DRONE_MAX_RIGHT_MPS)
+             + (v_y / HW_DRONE_MAX_FWD_MPS) * (v_y / HW_DRONE_MAX_FWD_MPS);
+    if (norm_ell > 1.0f)
     {
-        const float scale = max_speed_mps / v_norm;
+        const float scale = 1.0f / sqrtf(norm_ell);
         v_x *= scale;
         v_y *= scale;
+    }
+
+    /* 信标冲刺阶段: 信标进入 DASH_ZONE(40px) 内, 沿 PD 方向把速度提到 DASH_SPEED,
+     * 但前后轴仍受 MAX_FWD 限制, 避免正前方信标过冲出界。
+     * 只放大不缩小: 若 PD 输出已 > DASH_SPEED 则不降速。纯缩放不扭曲方向,
+     * 冲刺方向 = PD 单位误差向量 (实时跟随, 非冻结)。仍走后续 slew 平滑加速。 */
+    if (dist_px <= HW_DRONE_DASH_ZONE_PX)
+    {
+        const float speed_now = sqrtf((v_x * v_x) + (v_y * v_y));
+        if ((speed_now > 0.001f) && (speed_now < HW_DRONE_DASH_SPEED_MPS))
+        {
+            const float dash_scale = HW_DRONE_DASH_SPEED_MPS / speed_now;
+            v_x *= dash_scale;
+            v_y *= dash_scale;
+        }
+        v_x = chassis_clamp(v_x, -HW_DRONE_MAX_RIGHT_MPS, HW_DRONE_MAX_RIGHT_MPS);
+        v_y = chassis_clamp(v_y, -HW_DRONE_MAX_FWD_MPS, HW_DRONE_MAX_FWD_MPS);
     }
 
     /* Map pixel-frame (x=right, y=forward) to body frame (vy>0 right, vx>0 fwd). */
     *vx_body_cmd = HW_DRONE_FWD_SIGN * v_y;
     *vy_body_cmd = HW_DRONE_RIGHT_SIGN * v_x;
+}
+
+static void chassis_drone_lock_strike_velocity(float err_x_px, float err_y_px)
+{
+    float vx = g_runtime.cmd_vx_body_state;
+    float vy = g_runtime.cmd_vy_body_state;
+    float speed = sqrtf((vx * vx) + (vy * vy));
+
+    if (speed < HW_BEACON_COAST_MIN_VEL_MPS)
+    {
+        float dist = sqrtf((err_x_px * err_x_px) + (err_y_px * err_y_px));
+        if ((dist <= HW_DRONE_DEADBAND_PX) && (g_runtime.drone_vb_valid != 0U))
+        {
+            err_x_px = g_runtime.drone_last_vb_x_px;
+            err_y_px = g_runtime.drone_last_vb_y_px;
+            dist = sqrtf((err_x_px * err_x_px) + (err_y_px * err_y_px));
+        }
+
+        if (dist > HW_DRONE_DEADBAND_PX)
+        {
+            vx = HW_DRONE_FWD_SIGN * (err_y_px / dist);
+            vy = HW_DRONE_RIGHT_SIGN * (err_x_px / dist);
+            speed = 1.0f;
+        }
+        else
+        {
+            vx = HW_DRONE_FWD_SIGN;
+            vy = 0.0f;
+            speed = 1.0f;
+        }
+    }
+
+    if (speed < HW_DRONE_DASH_SPEED_MPS)
+    {
+        const float scale = HW_DRONE_DASH_SPEED_MPS / speed;
+        vx *= scale;
+        vy *= scale;
+    }
+
+    vx = chassis_clamp(vx, -HW_DRONE_MAX_FWD_MPS, HW_DRONE_MAX_FWD_MPS);
+    vy = chassis_clamp(vy, -HW_DRONE_MAX_RIGHT_MPS, HW_DRONE_MAX_RIGHT_MPS);
+
+    g_runtime.cmd_vx_body_state = vx;
+    g_runtime.cmd_vy_body_state = vy;
 }
 
 static void chassis_position_move_reset(void)
@@ -921,14 +1096,41 @@ static void chassis_position_move_commit(float yaw_deg)
 static void chassis_apply_body_command_slew(float *vx_body_cmd, float *vy_body_cmd, float dt_s)
 {
     const float max_step = HW_MAX_LINEAR_ACCEL_MPS2 * dt_s;
+    float cur_vx;
+    float cur_vy;
+    float dv_x;
+    float dv_y;
+    float dv_norm;
+    float max_dv_norm;
 
     if ((vx_body_cmd == 0) || (vy_body_cmd == 0) || (dt_s <= 0.0f))
     {
         return;
     }
 
-    g_runtime.cmd_vx_body_state = chassis_move_toward(g_runtime.cmd_vx_body_state, *vx_body_cmd, max_step);
-    g_runtime.cmd_vy_body_state = chassis_move_toward(g_runtime.cmd_vy_body_state, *vy_body_cmd, max_step);
+    /* Vector-magnitude slew instead of per-axis slew.
+     * Per-axis slew throttles a single axis when the required direction changes
+     * (e.g. beacon moves from ahead to the right), making the car trace an arc /
+     * detour instead of heading straight at the beacon. Limiting the MAGNITUDE of
+     * the velocity delta vector (|target - current|) lets the direction follow the
+     * live P-term unit vector immediately while still capping the acceleration, so
+     * the chassis accelerates/brakes smoothly but no longer lags on axis changes.
+     * max_dv_norm uses sqrt(2)*max_step so pure speed-up (both axes grow) keeps the
+     * same per-axis ceiling as before for motor-safety parity. */
+    cur_vx = g_runtime.cmd_vx_body_state;
+    cur_vy = g_runtime.cmd_vy_body_state;
+    dv_x = *vx_body_cmd - cur_vx;
+    dv_y = *vy_body_cmd - cur_vy;
+    dv_norm = sqrtf((dv_x * dv_x) + (dv_y * dv_y));
+    max_dv_norm = 1.4142f * max_step;
+    if (dv_norm > max_dv_norm)
+    {
+        const float scale = max_dv_norm / dv_norm;
+        dv_x *= scale;
+        dv_y *= scale;
+    }
+    g_runtime.cmd_vx_body_state = cur_vx + dv_x;
+    g_runtime.cmd_vy_body_state = cur_vy + dv_y;
     *vx_body_cmd = g_runtime.cmd_vx_body_state;
     *vy_body_cmd = g_runtime.cmd_vy_body_state;
 }
@@ -1303,6 +1505,24 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
         g_runtime.drone = *drone;
     }
 
+    /* 帧边沿检测: app 层在新帧到达时把 age_ms 归零。利用这一信号锁定真实帧间隔,
+     * 供 D 项微分使用, 避免 200Hz 控制环对 30Hz 视觉做微分产生尖峰。 */
+    if ((fresh != 0U) && (age_ms == 0U))
+    {
+        const uint16 frame_dt_ms = (uint16)(g_runtime.drone_age_accum_ms + HW_CONTROL_PERIOD_MS);
+        g_runtime.drone_frame_dt_s = (float)frame_dt_ms * 0.001f;
+        g_runtime.drone_age_accum_ms = 0U;
+        g_runtime.drone_frame_fresh = 1U;
+    }
+    else
+    {
+        if (g_runtime.drone_age_accum_ms < 0xFFFFU)
+        {
+            g_runtime.drone_age_accum_ms = (uint16)(g_runtime.drone_age_accum_ms + HW_CONTROL_PERIOD_MS);
+        }
+        g_runtime.drone_frame_fresh = 0U;
+    }
+
     g_status.drone_fresh = fresh ? 1U : 0U;
     g_status.drone_age_ms = age_ms;
     g_status.drone_flags = g_runtime.drone.flags;
@@ -1428,6 +1648,12 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
             g_runtime.drone_error_filter_valid = 0U;
             g_runtime.drone_last_error_valid = 0U;
+            g_runtime.drone_cross_committed = 0U;
+            g_runtime.drone_cross_commit_ms = 0U;
+            g_runtime.drone_vb_valid = 0U;
+            g_runtime.drone_stuck_detect_ms = 0U;
+            g_runtime.drone_stuck_escape_ms = 0U;
+            g_runtime.drone_stuck_retry_count = 0U;
         }
 
         if (g_status.mode == CHASSIS_MODE_SAFE_STOP)
@@ -1449,6 +1675,12 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
             g_runtime.drone_error_filter_valid = 0U;
             g_runtime.drone_last_error_valid = 0U;
+            g_runtime.drone_cross_committed = 0U;
+            g_runtime.drone_cross_commit_ms = 0U;
+            g_runtime.drone_vb_valid = 0U;
+            g_runtime.drone_stuck_detect_ms = 0U;
+            g_runtime.drone_stuck_escape_ms = 0U;
+            g_runtime.drone_stuck_retry_count = 0U;
             if (!g_runtime.yaw_lock_valid)
             {
                 chassis_reset_heading_controller(yaw_deg);
@@ -1623,7 +1855,67 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
 
         case CHASSIS_MODE_DRONE_TRACK:
         {
-            if (g_status.drone_move_valid != 0U)
+            /* 卡住检测 (move_valid 期间持续监控): 命令大但实测小持续确认窗口 -> 触发前后轴自救。
+             * 自救优先级最高: 触发或仍在自救窗口内时, 覆盖命令为纯前后轴强驱动, 跳过PD/COAST。 */
+            (void)chassis_drone_update_stuck_detection(g_status.drone_move_valid);
+
+            if (g_runtime.drone_stuck_escape_ms > 0U)
+            {
+                uint8 escape_done = 0U;
+                g_runtime.drone_stuck_escape_ms = (g_runtime.drone_stuck_escape_ms > HW_CONTROL_PERIOD_MS)
+                                                ? (uint16)(g_runtime.drone_stuck_escape_ms - HW_CONTROL_PERIOD_MS)
+                                                : 0U;
+                if (g_runtime.drone_stuck_escape_ms == 0U)
+                {
+                    /* 自救窗口结束: 重试计数+1, 超限放弃(停车不再尝试); 否则回PD重新追踪。 */
+                    if (g_runtime.drone_stuck_retry_count < 0xFFU)
+                    {
+                        g_runtime.drone_stuck_retry_count++;
+                    }
+                    if (g_runtime.drone_stuck_retry_count > HW_BEACON_STUCK_MAX_RETRY)
+                    {
+                        escape_done = 2U;   /* 超限: 停车放弃, 不再驱动 */
+                    }
+                    else
+                    {
+                        escape_done = 1U;   /* 正常退出: 回PD, 清cross-commit/滤波重追 */
+                        g_runtime.drone_cross_committed = 0U;
+                        g_runtime.drone_cross_commit_ms = 0U;
+                        g_runtime.drone_error_filter_valid = 0U;
+                        g_runtime.drone_last_error_valid = 0U;
+                        g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
+                    }
+                }
+
+                if (escape_done != 2U)
+                {
+                    /* 自救动作: 纯前后轴(纯vx)强驱动, omega跑yaw_hold锁头不破, vy=0不走侧向无力轴。 */
+                    g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_STUCK_ESCAPE;
+                    vx_body_cmd = g_runtime.drone_stuck_escape_dir * HW_BEACON_ESCAPE_SPEED_MPS;
+                    vy_body_cmd = 0.0f;
+                    /* 自救速度直接写入 state (不走 slew, 保证全力挣脱)。 */
+                    g_runtime.cmd_vx_body_state = vx_body_cmd;
+                    g_runtime.cmd_vy_body_state = vy_body_cmd;
+                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
+                    command_active = 1U;
+                    g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+                    g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
+                }
+                else
+                {
+                    /* 超重试次数: 停车放弃。清速度命令, command_active=0 让外层失能电机。
+                     * 不再驱动避免无限来回卡。yaw_hold 仍跑维持锁头。 */
+                    g_runtime.cmd_vx_body_state = 0.0f;
+                    g_runtime.cmd_vy_body_state = 0.0f;
+                    vx_body_cmd = 0.0f;
+                    vy_body_cmd = 0.0f;
+                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
+                    command_active = 1U;   /* 保持 yaw_lock 活跃, 仅平移为零 */
+                    g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+                    g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
+                }
+            }
+            else if (g_status.drone_move_valid != 0U)
             {
                 float vb_x_px;
                 float vb_y_px;
@@ -1635,22 +1927,118 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                                            &vb_y_px);
                 vb_dist_px = chassis_drone_error_distance(vb_x_px, vb_y_px);
 
-                /* Always closed-loop: no STRIKE open-loop dash. The PD command
-                 * below keeps updating direction every tick from the live pixel
-                 * error, so the V-beacon pixel distance decreases monotonically. */
+                /* 信标重新远距出现(距离远超卡住区): 认为是新一次接近, 清零卡住重试计数。 */
+                if (vb_dist_px > HW_BEACON_STUCK_RETRY_RESET_PX)
+                {
+                    g_runtime.drone_stuck_retry_count = 0U;
+                }
+
                 if (g_runtime.drone_track_state == CHASSIS_DRONE_TRACK_COAST)
                 {
                     g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
                 }
 
-                chassis_drone_track_compute_command(vb_x_px,
-                                                     vb_y_px,
-                                                     vb_dist_px,
-                                                     dt_s,
-                                                     &vx_body_cmd,
-                                                     &vy_body_cmd);
-                chassis_drone_store_last_error(vb_x_px, vb_y_px);
-                chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
+                /* 主动击灭承诺区 (move_valid 仍为1期间生效):
+                 * - 未锁定: 跑 PD 闭环, 然后做穿越检测 (V-B 距离<CROSS_ZONE 且与上一拍 vb 点积<=0
+                 *   = 信标刚从小车下方穿到另一侧 -> 锁定此刻 body 速度方向继续滑行)。
+                 * - 已锁定: 冻结 PD 反向追踪, 保持锁定瞬间的 body 速度方向继续冲 (不减速不反向),
+                 *   直到 move_valid 掉(进COAST完成击灭) / 距离重新变大(没踩中) / 超时(防永久锁死)。
+                 *   锁定期间不走 slew 衰减, 直接复用 cmd_vx/vy_body_state (锁定瞬间的实际速度)。 */
+                if (g_runtime.drone_cross_committed == 0U)
+                {
+                    chassis_drone_track_compute_command(vb_x_px,
+                                                         vb_y_px,
+                                                         vb_dist_px,
+                                                         dt_s,
+                                                         &vx_body_cmd,
+                                                         &vy_body_cmd);
+                    if (g_runtime.drone_frame_fresh != 0U)
+                    {
+                        chassis_drone_store_last_error(vb_x_px, vb_y_px);
+                    }
+                    chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
+
+                    /* 击灭承诺触发 (两路并行, 任一满足即锁定当前 body 速度方向继续冲刺):
+                     * A) 方向翻转触发: V-B 距离<CROSS_ZONE 且与上一拍 vb 点积<=0
+                     *    (信标刚从小车下方穿到另一侧)。几何尺度偏晚。
+                     * B) 距离冲刺触发 (吸收早期方向): 距离<DASH_TRIGGER 且在持续缩小
+                     *    (last vb 距离>当前距离 = 真在逼近非抖动)。用进入近距区那一刻的
+                     *    稳定方向做冲刺方向, 不依赖近距像素方向 (5px抖动=几十度方向噪声)。
+                     * 仅在真实视觉帧到达拍判定, 避免复用帧误触发。 */
+                    if ((g_runtime.drone_frame_fresh != 0U) && (g_runtime.drone_vb_valid != 0U))
+                    {
+                        uint8 commit_now = 0U;
+                        if (vb_dist_px < HW_BEACON_STRIKE_CROSS_ZONE_PX)
+                        {
+                            const float dot = (vb_x_px * g_runtime.drone_last_vb_x_px)
+                                            + (vb_y_px * g_runtime.drone_last_vb_y_px);
+                            if (dot <= 0.0f)
+                            {
+                                commit_now = 1U;   /* A) 方向翻转 */
+                            }
+                        }
+                        if ((commit_now == 0U) && (vb_dist_px < HW_BEACON_DASH_TRIGGER_PX))
+                        {
+                            const float last_dist = sqrtf((g_runtime.drone_last_vb_x_px * g_runtime.drone_last_vb_x_px)
+                                                        + (g_runtime.drone_last_vb_y_px * g_runtime.drone_last_vb_y_px));
+                            /* 上一拍距离比当前大 = 在逼近 (排除原地抖动误触发)。 */
+                            if (last_dist > vb_dist_px)
+                            {
+                                commit_now = 1U;   /* B) 距离冲刺触发 */
+                            }
+                        }
+                        if (commit_now != 0U)
+                        {
+                            g_runtime.drone_cross_committed = 1U;
+                            g_runtime.drone_cross_commit_ms = 0U;
+                            chassis_drone_lock_strike_velocity(vb_x_px, vb_y_px);
+                            vx_body_cmd = g_runtime.cmd_vx_body_state;
+                            vy_body_cmd = g_runtime.cmd_vy_body_state;
+                        }
+                    }
+                    /* 更新上一拍 vb (用本拍滤波后误差) 供下拍穿越检测。 */
+                    g_runtime.drone_last_vb_x_px = vb_x_px;
+                    g_runtime.drone_last_vb_y_px = vb_y_px;
+                    g_runtime.drone_vb_valid = 1U;
+                }
+                else
+                {
+                    /* 已锁定: 检查退出条件。退出条件任一满足即解除锁定, 回到 PD 闭环。 */
+                    uint8 exit_commit = 0U;
+                    g_runtime.drone_cross_commit_ms = (uint16)(g_runtime.drone_cross_commit_ms + HW_CONTROL_PERIOD_MS);
+                    if (g_runtime.drone_cross_commit_ms >= HW_BEACON_CROSS_COMMIT_TIMEOUT_MS)
+                    {
+                        exit_commit = 1U;   /* 超时防永久锁死 */
+                    }
+                    else if (vb_dist_px > HW_BEACON_CROSS_COMMIT_ESCAPE_PX)
+                    {
+                        exit_commit = 1U;   /* 距离重新变大 = 没踩中, 让 PD 重新接管追踪 */
+                    }
+                    else
+                    {
+                        /* 仍锁定: 保持锁定瞬间的 body 速度方向继续冲, 不走 slew 衰减。 */
+                        vx_body_cmd = g_runtime.cmd_vx_body_state;
+                        vy_body_cmd = g_runtime.cmd_vy_body_state;
+                    }
+
+                    if (exit_commit != 0U)
+                    {
+                        g_runtime.drone_cross_committed = 0U;
+                        g_runtime.drone_cross_commit_ms = 0U;
+                        /* 解锁后本拍仍跑一次 PD, 避免空拍丢指令。 */
+                        chassis_drone_track_compute_command(vb_x_px,
+                                                             vb_y_px,
+                                                             vb_dist_px,
+                                                             dt_s,
+                                                             &vx_body_cmd,
+                                                             &vy_body_cmd);
+                        chassis_apply_body_command_slew(&vx_body_cmd, &vy_body_cmd, dt_s);
+                    }
+                    /* 锁定期间同步更新上一拍 vb, 保持穿越检测基准连续 (解锁后下拍可用)。 */
+                    g_runtime.drone_last_vb_x_px = vb_x_px;
+                    g_runtime.drone_last_vb_y_px = vb_y_px;
+                    g_runtime.drone_vb_valid = 1U;
+                }
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
@@ -1658,15 +2046,15 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             }
             else if (g_runtime.coast_remaining_ms > 0U)
             {
-                /* Beacon went under the car (occluded) while the link is still
-                 * fresh: hold the last closed-loop body velocity (no slew decay)
-                 * so the car physically overruns and extinguishes the beacon.
-                 * Direction is the last PD-corrected command, not a frozen dir.
-                 * If the held speed is below the dash floor (e.g. the loop had
-                 * already braked near the deadband), scale it up along its own
-                 * direction so the chassis has enough momentum to clear the lamp
-                 * housing instead of getting caught on the cover. */
+                /* Beacon disappeared after the pass-over moment. Keep moving
+                 * along the locked strike command so the chassis clears the
+                 * lamp cover instead of dithering around the beacon edge. */
                 g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_COAST;
+                /* 信标已消失 (无论是否踩灭), 穿越承诺任务结束, 清除锁定让后续重捕获从新 PD 开始。
+                 * 卡住检测也清零 (信标已不在, 不再算"驱向信标却不动")。 */
+                g_runtime.drone_cross_committed = 0U;
+                g_runtime.drone_cross_commit_ms = 0U;
+                g_runtime.drone_stuck_detect_ms = 0U;
                 {
                     float coast_speed = sqrtf((g_runtime.cmd_vx_body_state * g_runtime.cmd_vx_body_state) +
                                               (g_runtime.cmd_vy_body_state * g_runtime.cmd_vy_body_state));
@@ -1694,6 +2082,10 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 g_runtime.drone_track_state = CHASSIS_DRONE_TRACK_APPROACH;
                 g_runtime.drone_error_filter_valid = 0U;
                 g_runtime.drone_last_error_valid = 0U;
+                g_runtime.drone_cross_committed = 0U;
+                g_runtime.drone_cross_commit_ms = 0U;
+                g_runtime.drone_vb_valid = 0U;
+                g_runtime.drone_stuck_detect_ms = 0U;
             }
         } break;
 
@@ -1759,7 +2151,9 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
 
             duty_limit = (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ?
                          (float)HW_MOTOR_DUTY_MAX :
-                         (float)HW_MANUAL_MAX_DUTY;
+                         ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) ?
+                          (float)HW_DRONE_TRACK_MAX_DUTY :
+                          (float)HW_MANUAL_MAX_DUTY);
             duty_ff = chassis_feedforward_duty(i, wheel_target_mps[i]);
             duty_raw = duty_ff + pid_compute(&g_wheel_pid[i], wheel_target_mps[i], g_runtime.odom.wheel_speed_mps[i], dt_s);
             g_status.motor_duty[i] = chassis_clamp(duty_raw, -duty_limit, duty_limit);
