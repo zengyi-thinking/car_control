@@ -5,12 +5,13 @@
 
 #define DRONE_FRAME_HEAD                 0xA4U
 #define DRONE_FRAME_TAIL                 0x55U
-#define DRONE_FRAME_SIZE                 16U
+#define DRONE_FRAME_SIZE                 18U
 #define DRONE_FRAME_SIZE_MAX             DRONE_FRAME_SIZE
 
 #define PROTO_DRONE_FLAG_HAS_VLAMP       (1U << 0)
 #define PROTO_DRONE_FLAG_HAS_BEACON      (1U << 1)
 #define PROTO_DRONE_FLAG_MOVE_VALID      (1U << 2)
+#define PROTO_DRONE_FLAG_HAS_YAW_ERR     (1U << 3)
 
 typedef struct
 {
@@ -20,6 +21,7 @@ typedef struct
     int16 beacon_y_px;
     int16 vb_x_px;
     int16 vb_y_px;
+    int16 yaw_err_cdeg;
     uint16 v_conf_permille;
     uint16 beacon_conf_permille;
     uint8 flags;

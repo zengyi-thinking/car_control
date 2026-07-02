@@ -347,13 +347,14 @@ void hw_display_update(const chassis_status_t *status)
 
     if(status->drone_move_valid != 0U)
     {
-        hw_display_make_line(lines[3], "VBX %+4d VBY %+4d",
+        hw_display_make_line(lines[3], "VBX%+4d VBY%+4d Y%+3d",
                              (int)status->drone_vb_x_px,
-                             (int)status->drone_vb_y_px);
+                             (int)status->drone_vb_y_px,
+                             (int)(status->drone_yaw_err_cdeg / 100));
     }
     else
     {
-        hw_display_make_line(lines[3], "VBX ---- VBY ----");
+        hw_display_make_line(lines[3], "VBX ---- VBY ---- Y--");
     }
 
     hw_display_make_line(lines[4], "VX %+1.2f VY %+1.2f",

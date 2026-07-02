@@ -98,6 +98,7 @@ typedef struct
     int16 drone_beacon_y_px;
     int16 drone_vb_x_px;
     int16 drone_vb_y_px;
+    int16 drone_yaw_err_cdeg;
     uint16 drone_v_conf_permille;
     uint16 drone_beacon_conf_permille;
     uint8 drone_flags;
@@ -114,7 +115,7 @@ void chassis_control_reset(void);
 void chassis_control_set_mode(chassis_mode_t mode);
 void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, uint16 age_ms);
 void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms);
-void chassis_control_set_coast(uint16 remaining_ms);
+uint8 chassis_control_drone_strike_hold_ready(void);
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude);
 const chassis_status_t *chassis_control_get_status(void);
 void chassis_control_get_motor_duty(int16 duty_out[4]);

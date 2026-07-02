@@ -69,6 +69,11 @@ static uint8 proto_drone_try_parse(proto_drone_data_t *out)
     out->v_conf_permille = proto_drone_read_u16(rx_buf[9], rx_buf[10]);
     out->beacon_conf_permille = proto_drone_read_u16(rx_buf[11], rx_buf[12]);
     out->flags = rx_buf[13];
+    out->yaw_err_cdeg = proto_drone_read_i16(rx_buf[14], rx_buf[15]);
+    if((out->flags & PROTO_DRONE_FLAG_HAS_YAW_ERR) == 0U)
+    {
+        out->yaw_err_cdeg = 0;
+    }
     if((out->flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U)
     {
         out->vb_x_px = (int16)(out->beacon_x_px - out->v_x_px);
