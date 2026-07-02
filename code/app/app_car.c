@@ -46,7 +46,6 @@ static uint8 app_drone_strike_hold_valid(void)
 {
     return app_drone_fresh() &&
            ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) == 0U) &&
-           ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U) &&
            (chassis_control_drone_strike_hold_ready() != 0U);
 }
 
