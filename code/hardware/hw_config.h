@@ -36,7 +36,8 @@
  * steady-state error to null, and integral windup risks overrunning the beacon).
  *   P : distance -> speed curve (see chassis_drone_distance_to_speed).
  *   D : -KD * d(pixel_err)/dt, dampens overshoot when the error grows. */
-#define HW_DRONE_TRACK_KD_MPS_PER_PXPS        0.003f
+#define HW_DRONE_TRACK_KD_MPS_PER_PXPS        0.0022f
+#define HW_DRONE_TRACK_ACCEL_MPS2             5.5f
 /* Close beacon press: slow down near the beacon, then lock one short pass. */
 #define HW_DRONE_NEAR_SLOW_PX                 70.0f
 #define HW_DRONE_NEAR_SPEED_MPS               0.75f
@@ -49,6 +50,7 @@
 #define HW_DRONE_PASS_MS                      110U
 #define HW_DRONE_PASS_BRAKE_MS                110U
 #define HW_DRONE_PASS_COOLDOWN_MS             180U
+#define HW_DRONE_LOST_GLIDE_MS                120U
 #define HW_DRONE_NEAR_DAMP_SCALE              0.15f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
 /* Car reference frame for the drone link:
