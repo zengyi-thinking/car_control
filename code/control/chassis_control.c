@@ -164,6 +164,7 @@ typedef struct
     uint16 drone_pass_cooldown_ms;
     float drone_strike_dir_x;
     float drone_strike_dir_y;
+    float drone_follow_scale;
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -291,6 +292,7 @@ static void chassis_reset_command_states(void)
     g_runtime.drone_pass_cooldown_ms = 0U;
     g_runtime.drone_strike_dir_x = 0.0f;
     g_runtime.drone_strike_dir_y = 1.0f;
+    g_runtime.drone_follow_scale = 1.0f;
 }
 
 static void chassis_seed_command_states_from_odometry(void)
@@ -810,6 +812,62 @@ static float chassis_drone_distance_to_speed(float dist_px)
     return HW_DRONE_NEAR_SPEED_MPS + ((max_speed_mps - HW_DRONE_NEAR_SPEED_MPS) * smooth);
 }
 
+static float chassis_drone_follow_target_scale(void)
+{
+    float dx_px;
+    float dy_px;
+    float err_px;
+    float progress;
+    float smooth;
+
+    if((g_status.drone_fresh == 0U)
+       || ((g_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) == 0U))
+    {
+        return 1.0f;
+    }
+
+    dx_px = (float)g_runtime.drone.v_x_px - HW_DRONE_V_CENTER_X_PX;
+    dy_px = (float)g_runtime.drone.v_y_px - HW_DRONE_V_CENTER_Y_PX;
+    err_px = sqrtf((dx_px * dx_px) + (dy_px * dy_px));
+
+    if(err_px <= HW_DRONE_FOLLOW_FULL_ERR_PX)
+    {
+        return 1.0f;
+    }
+    if(err_px >= HW_DRONE_FOLLOW_SLOW_ERR_PX)
+    {
+        return HW_DRONE_FOLLOW_MIN_SCALE;
+    }
+
+    progress = (err_px - HW_DRONE_FOLLOW_FULL_ERR_PX)
+             / (HW_DRONE_FOLLOW_SLOW_ERR_PX - HW_DRONE_FOLLOW_FULL_ERR_PX);
+    progress = chassis_clamp(progress, 0.0f, 1.0f);
+    smooth = progress * progress * (3.0f - (2.0f * progress));
+    return 1.0f - smooth * (1.0f - HW_DRONE_FOLLOW_MIN_SCALE);
+}
+
+static void chassis_drone_update_follow_scale(void)
+{
+    const float alpha = chassis_clamp(HW_DRONE_FOLLOW_SCALE_ALPHA, 0.0f, 1.0f);
+    const float target_scale = chassis_drone_follow_target_scale();
+
+    g_runtime.drone_follow_scale += alpha * (target_scale - g_runtime.drone_follow_scale);
+    g_runtime.drone_follow_scale = chassis_clamp(g_runtime.drone_follow_scale,
+                                                 HW_DRONE_FOLLOW_MIN_SCALE,
+                                                 1.0f);
+}
+
+static float chassis_drone_pass_speed_scaled(void)
+{
+    float scale = g_runtime.drone_follow_scale;
+
+    if(scale < HW_DRONE_FOLLOW_PASS_MIN_SCALE)
+    {
+        scale = HW_DRONE_FOLLOW_PASS_MIN_SCALE;
+    }
+    return HW_DRONE_PASS_SPEED_MPS * scale;
+}
+
 static void chassis_drone_filter_error(float raw_x_px, float raw_y_px, float *out_x_px, float *out_y_px)
 {
     const float alpha = chassis_clamp(HW_DRONE_TRACK_FILTER_ALPHA, 0.0f, 1.0f);
@@ -1120,7 +1178,7 @@ static void chassis_drone_track_compute_command(float err_x_px,
                    (g_runtime.drone_strike_dir_valid != 0U)) ? 1U : 0U;
     if (pass_active != 0U)
     {
-        chassis_drone_strike_vector_to_command(HW_DRONE_PASS_SPEED_MPS,
+        chassis_drone_strike_vector_to_command(chassis_drone_pass_speed_scaled(),
                                                vx_body_cmd,
                                                vy_body_cmd);
         chassis_drone_tick_pass_timer();
@@ -1143,7 +1201,7 @@ static void chassis_drone_track_compute_command(float err_x_px,
         {
             chassis_drone_start_pass(dir_x, dir_y);
         }
-        chassis_drone_strike_vector_to_command(HW_DRONE_PASS_SPEED_MPS,
+        chassis_drone_strike_vector_to_command(chassis_drone_pass_speed_scaled(),
                                                vx_body_cmd,
                                                vy_body_cmd);
         chassis_drone_tick_pass_timer();
@@ -1179,6 +1237,8 @@ static void chassis_drone_track_compute_command(float err_x_px,
 
     v_x = vp_x + vd_x;
     v_y = vp_y + vd_y;
+    v_x *= g_runtime.drone_follow_scale;
+    v_y *= g_runtime.drone_follow_scale;
 
     /* 各向异性椭圆 clamp: (v_x/MAX_RIGHT)^2 + (v_y/MAX_FWD)^2 <= 1。
      * v_x 是像素侧向误差->body 侧向 (right), 受 MAX_RIGHT 约束;
@@ -1722,6 +1782,7 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
     g_status.drone_yaw_err_cdeg = g_runtime.drone.yaw_err_cdeg;
     g_status.drone_v_conf_permille = g_runtime.drone.v_conf_permille;
     g_status.drone_beacon_conf_permille = g_runtime.drone.beacon_conf_permille;
+    chassis_drone_update_follow_scale();
 }
 
 uint8 chassis_control_drone_strike_hold_ready(void)
@@ -2145,7 +2206,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                         }
                         if (g_runtime.drone_strike_dir_valid != 0U)
                         {
-                            chassis_drone_strike_vector_to_command(HW_DRONE_PASS_SPEED_MPS,
+                            chassis_drone_strike_vector_to_command(chassis_drone_pass_speed_scaled(),
                                                                    &vx_body_cmd,
                                                                    &vy_body_cmd);
                             chassis_apply_body_command_slew_limit(&vx_body_cmd,

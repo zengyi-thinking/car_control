@@ -52,6 +52,14 @@
 #define HW_DRONE_PASS_COOLDOWN_MS             180U
 #define HW_DRONE_LOST_GLIDE_MS                120U
 #define HW_DRONE_NEAR_DAMP_SCALE              0.15f
+/* 根据 V 灯是否还在无人机画面中心附近动态让速。 */
+#define HW_DRONE_V_CENTER_X_PX                94.0f
+#define HW_DRONE_V_CENTER_Y_PX                60.0f
+#define HW_DRONE_FOLLOW_FULL_ERR_PX           18.0f
+#define HW_DRONE_FOLLOW_SLOW_ERR_PX           58.0f
+#define HW_DRONE_FOLLOW_MIN_SCALE             0.55f
+#define HW_DRONE_FOLLOW_PASS_MIN_SCALE        0.75f
+#define HW_DRONE_FOLLOW_SCALE_ALPHA           0.12f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
 /* Car reference frame for the drone link:
  *   +Y = forward, +X = right.
