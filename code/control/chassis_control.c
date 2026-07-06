@@ -92,7 +92,8 @@ volatile float g_chassis_wheel_pid_tune_target_mps = HW_WHEEL_TUNE_TARGET_MPS;
 typedef enum
 {
     CHASSIS_DRONE_TRACK_APPROACH = 0,
-    CHASSIS_DRONE_TRACK_HOLD = 1,
+    CHASSIS_DRONE_TRACK_LOST_WAIT = 1,
+    CHASSIS_DRONE_TRACK_ODOM_REVERSE = 2,
 } chassis_drone_track_phase_t;
 
 static const float s_wheel_ff_ks_duty[4] =
@@ -148,8 +149,14 @@ typedef struct
     uint8 drone_track_phase;
     uint8 drone_hold_dir_valid;
     uint16 drone_track_hold_ms;
+    uint16 drone_beacon_lost_ms;
+    uint16 drone_odom_reverse_ms;
     float drone_hold_dir_x;
     float drone_hold_dir_y;
+    float drone_beacon_span_x_m;
+    float drone_beacon_span_y_m;
+    float drone_reverse_search_x;
+    float drone_reverse_search_y;
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -206,6 +213,22 @@ static void chassis_body_to_field_move(float forward_m, float right_m, float yaw
     if (field_y_m)
     {
         *field_y_m = (sin_yaw * forward_m) + (cos_yaw * right_m);
+    }
+}
+
+static void chassis_field_to_body_vector(float field_x_m, float field_y_m, float yaw_deg, float *forward_m, float *right_m)
+{
+    const float yaw_rad = yaw_deg * CHASSIS_DEG_TO_RAD;
+    const float cos_yaw = cosf(yaw_rad);
+    const float sin_yaw = sinf(yaw_rad);
+
+    if (forward_m)
+    {
+        *forward_m = (cos_yaw * field_x_m) + (sin_yaw * field_y_m);
+    }
+    if (right_m)
+    {
+        *right_m = (-sin_yaw * field_x_m) + (cos_yaw * field_y_m);
     }
 }
 
@@ -268,8 +291,14 @@ static void chassis_reset_command_states(void)
     g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_APPROACH;
     g_runtime.drone_hold_dir_valid = 0U;
     g_runtime.drone_track_hold_ms = 0U;
+    g_runtime.drone_beacon_lost_ms = 0U;
+    g_runtime.drone_odom_reverse_ms = 0U;
     g_runtime.drone_hold_dir_x = 0.0f;
     g_runtime.drone_hold_dir_y = 1.0f;
+    g_runtime.drone_beacon_span_x_m = 0.0f;
+    g_runtime.drone_beacon_span_y_m = 0.0f;
+    g_runtime.drone_reverse_search_x = 0.0f;
+    g_runtime.drone_reverse_search_y = 0.0f;
 }
 
 static void chassis_seed_command_states_from_odometry(void)
@@ -788,13 +817,19 @@ static void chassis_drone_filter_error(float raw_x_px, float raw_y_px, float *ou
     }
 }
 
-static void chassis_drone_reset_strike_state(void)
+static void chassis_drone_reset_fallback_state(void)
 {
     g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_APPROACH;
     g_runtime.drone_hold_dir_valid = 0U;
     g_runtime.drone_track_hold_ms = 0U;
+    g_runtime.drone_beacon_lost_ms = 0U;
+    g_runtime.drone_odom_reverse_ms = 0U;
     g_runtime.drone_hold_dir_x = 0.0f;
     g_runtime.drone_hold_dir_y = 1.0f;
+    g_runtime.drone_beacon_span_x_m = 0.0f;
+    g_runtime.drone_beacon_span_y_m = 0.0f;
+    g_runtime.drone_reverse_search_x = 0.0f;
+    g_runtime.drone_reverse_search_y = 0.0f;
 }
 
 static void chassis_drone_store_hold_dir(float dir_x, float dir_y)
@@ -818,6 +853,28 @@ static uint8 chassis_drone_lost_hold_active(void)
             (g_runtime.drone_hold_dir_valid != 0U)) ? 1U : 0U;
 }
 
+static uint8 chassis_drone_fallback_active(void)
+{
+    if (g_runtime.drone_hold_dir_valid == 0U)
+    {
+        return 0U;
+    }
+
+    if (g_runtime.drone_track_phase == CHASSIS_DRONE_TRACK_ODOM_REVERSE)
+    {
+        return 1U;
+    }
+
+    if (g_runtime.drone_beacon_lost_ms < HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS)
+    {
+        return 1U;
+    }
+
+    return (sqrtf((g_runtime.drone_beacon_span_x_m * g_runtime.drone_beacon_span_x_m) +
+                  (g_runtime.drone_beacon_span_y_m * g_runtime.drone_beacon_span_y_m)) >=
+            HW_DRONE_ODOM_REVERSE_MIN_SPAN_M) ? 1U : 0U;
+}
+
 static void chassis_drone_tick_lost_hold_timer(void)
 {
     if(g_runtime.drone_track_hold_ms > HW_CONTROL_PERIOD_MS)
@@ -827,8 +884,31 @@ static void chassis_drone_tick_lost_hold_timer(void)
     else
     {
         g_runtime.drone_track_hold_ms = 0U;
-        g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_APPROACH;
     }
+}
+
+static void chassis_drone_reset_lost_fallback(uint8 clear_progress)
+{
+    g_runtime.drone_beacon_lost_ms = 0U;
+    g_runtime.drone_odom_reverse_ms = 0U;
+    g_runtime.drone_reverse_search_x = 0.0f;
+    g_runtime.drone_reverse_search_y = 0.0f;
+    if (clear_progress != 0U)
+    {
+        g_runtime.drone_beacon_span_x_m = 0.0f;
+        g_runtime.drone_beacon_span_y_m = 0.0f;
+    }
+}
+
+static void chassis_drone_record_beacon_span(void)
+{
+    if (g_runtime.odom.valid == 0U)
+    {
+        return;
+    }
+
+    g_runtime.drone_beacon_span_x_m += g_runtime.odom.delta_x_field_m;
+    g_runtime.drone_beacon_span_y_m += g_runtime.odom.delta_y_field_m;
 }
 
 static void chassis_drone_vector_to_command(float dir_x,
@@ -864,11 +944,13 @@ static void chassis_drone_vector_to_command(float dir_x,
 static void chassis_drone_track_compute_command(float err_x_px,
                                                 float err_y_px,
                                                 float dist_px,
+                                                float dt_s,
                                                 float *vx_body_cmd,
                                                 float *vy_body_cmd)
 {
     float dir_x;
     float dir_y;
+    const uint8 was_reverse = (g_runtime.drone_track_phase == CHASSIS_DRONE_TRACK_ODOM_REVERSE) ? 1U : 0U;
 
     if ((vx_body_cmd == 0) || (vy_body_cmd == 0))
     {
@@ -899,6 +981,9 @@ static void chassis_drone_track_compute_command(float err_x_px,
         chassis_drone_store_hold_dir(dir_x, dir_y);
     }
 
+    chassis_drone_reset_lost_fallback(was_reverse);
+    (void)dt_s;
+    chassis_drone_record_beacon_span();
     g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_APPROACH;
     g_runtime.drone_track_hold_ms = HW_DRONE_LOST_HOLD_MS;
     chassis_drone_vector_to_command(dir_x,
@@ -907,19 +992,120 @@ static void chassis_drone_track_compute_command(float err_x_px,
                                      vy_body_cmd);
 }
 
-static void chassis_drone_lost_hold_command(float *vx_body_cmd, float *vy_body_cmd)
+static uint8 chassis_drone_start_odom_reverse(void)
 {
-    if((vx_body_cmd == 0) || (vy_body_cmd == 0) || (g_runtime.drone_hold_dir_valid == 0U))
+    float span_norm;
+
+    span_norm = sqrtf((g_runtime.drone_beacon_span_x_m * g_runtime.drone_beacon_span_x_m) +
+                      (g_runtime.drone_beacon_span_y_m * g_runtime.drone_beacon_span_y_m));
+    if ((!isfinite(span_norm)) || (span_norm < HW_DRONE_ODOM_REVERSE_MIN_SPAN_M))
     {
-        return;
+        return 0U;
     }
 
-    g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_HOLD;
-    chassis_drone_vector_to_command(g_runtime.drone_hold_dir_x,
-                                     g_runtime.drone_hold_dir_y,
-                                     vx_body_cmd,
-                                     vy_body_cmd);
-    chassis_drone_tick_lost_hold_timer();
+    g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_ODOM_REVERSE;
+    g_runtime.drone_reverse_search_x = -g_runtime.drone_beacon_span_x_m / span_norm;
+    g_runtime.drone_reverse_search_y = -g_runtime.drone_beacon_span_y_m / span_norm;
+    g_runtime.drone_odom_reverse_ms = 0U;
+    return 1U;
+}
+
+static uint8 chassis_drone_lost_fallback_command(float *vx_body_cmd, float *vy_body_cmd, float dt_s)
+{
+    (void)dt_s;
+
+    if((vx_body_cmd == 0) || (vy_body_cmd == 0) || (g_runtime.drone_hold_dir_valid == 0U))
+    {
+        return 0U;
+    }
+
+    if (g_runtime.drone_track_phase != CHASSIS_DRONE_TRACK_ODOM_REVERSE)
+    {
+        g_runtime.drone_track_phase = CHASSIS_DRONE_TRACK_LOST_WAIT;
+    }
+
+    if (g_runtime.drone_beacon_lost_ms < HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS)
+    {
+        if ((uint32)g_runtime.drone_beacon_lost_ms + HW_CONTROL_PERIOD_MS >=
+            HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS)
+        {
+            g_runtime.drone_beacon_lost_ms = HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS;
+        }
+        else
+        {
+            g_runtime.drone_beacon_lost_ms = (uint16)(g_runtime.drone_beacon_lost_ms + HW_CONTROL_PERIOD_MS);
+        }
+    }
+
+    if (chassis_drone_lost_hold_active() != 0U)
+    {
+        chassis_drone_vector_to_command(g_runtime.drone_hold_dir_x,
+                                         g_runtime.drone_hold_dir_y,
+                                         vx_body_cmd,
+                                         vy_body_cmd);
+        chassis_drone_tick_lost_hold_timer();
+        return 1U;
+    }
+
+    if (g_runtime.drone_track_phase == CHASSIS_DRONE_TRACK_LOST_WAIT)
+    {
+        *vx_body_cmd = 0.0f;
+        *vy_body_cmd = 0.0f;
+
+        if (g_runtime.drone_beacon_lost_ms < HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS)
+        {
+            return 1U;
+        }
+
+        if (chassis_drone_start_odom_reverse() == 0U)
+        {
+            return 0U;
+        }
+    }
+
+    if (g_runtime.drone_track_phase != CHASSIS_DRONE_TRACK_ODOM_REVERSE)
+    {
+        return 0U;
+    }
+
+    if ((g_runtime.drone_odom_reverse_ms >= HW_DRONE_ODOM_REVERSE_MAX_MS) ||
+        ((g_runtime.drone_reverse_search_x == 0.0f) && (g_runtime.drone_reverse_search_y == 0.0f)))
+    {
+        chassis_drone_reset_fallback_state();
+        return 0U;
+    }
+
+    {
+        float forward_dir;
+        float right_dir;
+        float dir_norm;
+
+        chassis_field_to_body_vector(g_runtime.drone_reverse_search_x,
+                                     g_runtime.drone_reverse_search_y,
+                                     g_runtime.odom.yaw_deg,
+                                     &forward_dir,
+                                     &right_dir);
+        dir_norm = sqrtf((forward_dir * forward_dir) + (right_dir * right_dir));
+        if ((!isfinite(dir_norm)) || (dir_norm < 0.001f))
+        {
+            chassis_drone_reset_fallback_state();
+            return 0U;
+        }
+
+        *vx_body_cmd = (forward_dir / dir_norm) * HW_DRONE_ODOM_REVERSE_SPEED_MPS;
+        *vy_body_cmd = (right_dir / dir_norm) * HW_DRONE_ODOM_REVERSE_SPEED_MPS;
+    }
+
+    if ((uint32)g_runtime.drone_odom_reverse_ms + HW_CONTROL_PERIOD_MS >= HW_DRONE_ODOM_REVERSE_MAX_MS)
+    {
+        g_runtime.drone_odom_reverse_ms = HW_DRONE_ODOM_REVERSE_MAX_MS;
+    }
+    else
+    {
+        g_runtime.drone_odom_reverse_ms = (uint16)(g_runtime.drone_odom_reverse_ms + HW_CONTROL_PERIOD_MS);
+    }
+
+    return 1U;
 }
 
 static void chassis_position_move_reset(void)
@@ -1432,9 +1618,9 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
     g_status.drone_beacon_conf_permille = g_runtime.drone.beacon_conf_permille;
 }
 
-uint8 chassis_control_drone_strike_hold_ready(void)
+uint8 chassis_control_drone_fallback_ready(void)
 {
-    return ((chassis_drone_lost_hold_active() != 0U) &&
+    return ((chassis_drone_fallback_active() != 0U) &&
             ((g_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U)) ? 1U : 0U;
 }
 
@@ -1544,7 +1730,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         {
             g_runtime.drone_error_filter_valid = 0U;
             g_runtime.drone_track_hold_ms = 0U;
-            chassis_drone_reset_strike_state();
+            chassis_drone_reset_fallback_state();
         }
 
         if (g_status.mode == CHASSIS_MODE_SAFE_STOP)
@@ -1564,7 +1750,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         {
             chassis_seed_command_states_from_odometry();
             g_runtime.drone_error_filter_valid = 0U;
-            chassis_drone_reset_strike_state();
+            chassis_drone_reset_fallback_state();
             if (!g_runtime.yaw_lock_valid)
             {
                 chassis_reset_heading_controller(yaw_deg);
@@ -1760,6 +1946,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 chassis_drone_track_compute_command(vb_x_px,
                                                      vb_y_px,
                                                      vb_dist_px,
+                                                     dt_s,
                                                      &vx_body_cmd,
                                                      &vy_body_cmd);
                 chassis_apply_body_command_slew_limit(&vx_body_cmd,
@@ -1772,24 +1959,26 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
             }
-            else if (chassis_control_drone_strike_hold_ready() != 0U)
+            else if (chassis_control_drone_fallback_ready() != 0U)
             {
-                chassis_drone_lost_hold_command(&vx_body_cmd, &vy_body_cmd);
-                chassis_apply_body_command_slew_limit(&vx_body_cmd,
-                                                      &vy_body_cmd,
-                                                      dt_s,
-                                                      HW_DRONE_TRACK_ACCEL_MPS2);
+                if (chassis_drone_lost_fallback_command(&vx_body_cmd, &vy_body_cmd, dt_s) != 0U)
+                {
+                    chassis_apply_body_command_slew_limit(&vx_body_cmd,
+                                                          &vy_body_cmd,
+                                                          dt_s,
+                                                          HW_DRONE_TRACK_ACCEL_MPS2);
 
-                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
-                command_active = 1U;
-                g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
-                g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
+                    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
+                    command_active = 1U;
+                    g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+                    g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
+                }
             }
             else
             {
                 g_runtime.drone_error_filter_valid = 0U;
                 g_runtime.drone_track_hold_ms = 0U;
-                chassis_drone_reset_strike_state();
+                chassis_drone_reset_fallback_state();
             }
         } break;
 
@@ -1895,7 +2084,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                          ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
                           g_status.drone_fresh &&
                           (g_status.drone_move_valid ||
-                           (chassis_drone_lost_hold_active() != 0U))) ||
+                           (chassis_drone_fallback_active() != 0U))) ||
                         ((g_status.mode == CHASSIS_MODE_SAFE_STOP) &&
                          g_runtime.yaw_lock_valid &&
                          command_active));

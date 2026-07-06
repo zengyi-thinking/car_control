@@ -42,11 +42,12 @@ static uint8 app_drone_move_valid(void)
            ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U);
 }
 
-static uint8 app_drone_strike_hold_valid(void)
+static uint8 app_drone_fallback_valid(void)
 {
     return app_drone_fresh() &&
            ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) == 0U) &&
-           (chassis_control_drone_strike_hold_ready() != 0U);
+           ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U) &&
+           (chassis_control_drone_fallback_ready() != 0U);
 }
 
 static uint16 app_abs_i16(int16 value)
@@ -69,7 +70,7 @@ static void app_update_mode(void)
 {
     const uint8 remote_override = app_remote_manual_override();
     const uint8 drone_move_valid = app_drone_move_valid();
-    const uint8 drone_hold_valid = app_drone_strike_hold_valid();
+    const uint8 drone_fallback_valid = app_drone_fallback_valid();
 
     if (g_chassis_wheel_pid_tune_enabled)
     {
@@ -81,7 +82,7 @@ static void app_update_mode(void)
     {
         g_app_runtime.mode = CHASSIS_MODE_MANUAL;
     }
-    else if ((drone_move_valid != 0U) || (drone_hold_valid != 0U))
+    else if ((drone_move_valid != 0U) || (drone_fallback_valid != 0U))
     {
         g_app_runtime.mode = CHASSIS_MODE_DRONE_TRACK;
     }

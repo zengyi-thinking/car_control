@@ -37,6 +37,10 @@
 #define HW_DRONE_TRACK_ACCEL_MPS2             5.5f
 #define HW_DRONE_CENTER_HOLD_PX               10.0f
 #define HW_DRONE_LOST_HOLD_MS                 450U
+#define HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS 1500U
+#define HW_DRONE_ODOM_REVERSE_SPEED_MPS       0.55f
+#define HW_DRONE_ODOM_REVERSE_MAX_MS          8000U
+#define HW_DRONE_ODOM_REVERSE_MIN_SPAN_M      0.10f
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
