@@ -27,39 +27,18 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-#define HW_DRONE_PX_NORM                      150.0f
-/* 前后速度保持保守, 侧向给到轮速上限, 用来补偿麦轮横移效率偏低。 */
-#define HW_DRONE_MAX_FWD_MPS                  0.80f
+/* 前后速度保持 1m/s, 侧向给到更高余量, 用来补偿麦轮横移效率偏低。 */
+#define HW_DRONE_MAX_FWD_MPS                  1.00f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.34f
-/* PD position loop gains for drone beacon tracking (no I term: mecanum has no
- * steady-state error to null, and integral windup risks overrunning the beacon).
- *   P : distance -> speed curve (see chassis_drone_distance_to_speed).
- *   D : -KD * d(pixel_err)/dt, dampens overshoot when the error grows. */
-#define HW_DRONE_TRACK_KD_MPS_PER_PXPS        0.0022f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.42f
+/* 无人机信标追踪采用恒速向量逼近, 扩展底盘可直接压灯, 不再末端冲刺。 */
+#define HW_DRONE_TRACK_SPEED_MPS              1.00f
+#define HW_DRONE_TRACK_FWD_SCALE              0.70f
 #define HW_DRONE_TRACK_ACCEL_MPS2             5.5f
-/* Close beacon press: slow down near the beacon, then lock one short pass. */
-#define HW_DRONE_NEAR_SLOW_PX                 70.0f
-#define HW_DRONE_NEAR_SPEED_MPS               0.75f
-#define HW_DRONE_PASS_TRIGGER_PX              36.0f
-#define HW_DRONE_PASS_LOST_TRIGGER_PX         56.0f
-#define HW_DRONE_PASS_REARM_PX                65.0f
-#define HW_DRONE_PASS_SPEED_MPS               2.00f
-#define HW_DRONE_PASS_ACCEL_MPS2              10.0f
-#define HW_DRONE_PASS_BRAKE_ACCEL_MPS2        18.0f
-#define HW_DRONE_PASS_MS                      110U
-#define HW_DRONE_PASS_BRAKE_MS                110U
-#define HW_DRONE_PASS_COOLDOWN_MS             180U
-#define HW_DRONE_LOST_GLIDE_MS                120U
-#define HW_DRONE_NEAR_DAMP_SCALE              0.15f
-/* 根据 V 灯是否还在无人机画面中心附近动态让速。 */
+#define HW_DRONE_CENTER_HOLD_PX               10.0f
+#define HW_DRONE_LOST_HOLD_MS                 450U
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
-#define HW_DRONE_FOLLOW_FULL_ERR_PX           18.0f
-#define HW_DRONE_FOLLOW_SLOW_ERR_PX           58.0f
-#define HW_DRONE_FOLLOW_MIN_SCALE             0.55f
-#define HW_DRONE_FOLLOW_PASS_MIN_SCALE        0.75f
-#define HW_DRONE_FOLLOW_SCALE_ALPHA           0.12f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
 /* Car reference frame for the drone link:
  *   +Y = forward, +X = right.

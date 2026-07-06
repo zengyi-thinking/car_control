@@ -12,6 +12,7 @@
 #define PROTO_DRONE_FLAG_HAS_BEACON      (1U << 1)
 #define PROTO_DRONE_FLAG_MOVE_VALID      (1U << 2)
 #define PROTO_DRONE_FLAG_HAS_YAW_ERR     (1U << 3)
+#define PROTO_DRONE_FLAG_FOLLOW_OK       (1U << 4)
 
 typedef struct
 {

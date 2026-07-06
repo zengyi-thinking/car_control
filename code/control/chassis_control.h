@@ -49,6 +49,8 @@ typedef struct
 
     float vel_x_field_mps;
     float vel_y_field_mps;
+    float vel_vx_body_mps;
+    float vel_vy_body_mps;
     float cmd_vx_field_mps;
     float cmd_vy_field_mps;
     float cmd_vx_body_mps;
