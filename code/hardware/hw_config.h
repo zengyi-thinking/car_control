@@ -30,17 +30,13 @@
 /* 前后速度保持 1m/s, 侧向给到更高余量, 用来补偿麦轮横移效率偏低。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.00f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.42f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.48f
 /* 无人机信标追踪采用恒速向量逼近, 扩展底盘可直接压灯, 不再末端冲刺。 */
 #define HW_DRONE_TRACK_SPEED_MPS              1.00f
 #define HW_DRONE_TRACK_FWD_SCALE              0.70f
-#define HW_DRONE_TRACK_ACCEL_MPS2             5.5f
+#define HW_DRONE_TRACK_ACCEL_MPS2             6.0f
 #define HW_DRONE_CENTER_HOLD_PX               10.0f
-#define HW_DRONE_LOST_HOLD_MS                 450U
-#define HW_DRONE_BEACON_LOST_REVERSE_DELAY_MS 1500U
-#define HW_DRONE_ODOM_REVERSE_SPEED_MPS       0.55f
-#define HW_DRONE_ODOM_REVERSE_MAX_MS          8000U
-#define HW_DRONE_ODOM_REVERSE_MIN_SPAN_M      0.10f
+#define HW_DRONE_LOST_HOLD_MS                 550U
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
