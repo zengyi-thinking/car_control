@@ -27,16 +27,20 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-/* 前后速度保持 1m/s, 侧向给到更高余量, 用来补偿麦轮横移效率偏低。 */
-#define HW_DRONE_MAX_FWD_MPS                  1.00f
+/* 前后速度提高到 1.2m/s, 侧向保留更高余量补偿麦轮横移效率。 */
+#define HW_DRONE_MAX_FWD_MPS                  1.20f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.48f
-/* 无人机信标追踪采用恒速向量逼近, 扩展底盘可直接压灯, 不再末端冲刺。 */
-#define HW_DRONE_TRACK_SPEED_MPS              1.00f
-#define HW_DRONE_TRACK_FWD_SCALE              0.70f
-#define HW_DRONE_TRACK_ACCEL_MPS2             6.0f
-#define HW_DRONE_CENTER_HOLD_PX               10.0f
-#define HW_DRONE_LOST_HOLD_MS                 550U
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.62f
+/* 信标追踪采用外圈快追、近圈降速、中心短促压灯。 */
+#define HW_DRONE_TRACK_SPEED_MPS              1.20f
+#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.55f
+#define HW_DRONE_TRACK_NEAR_PX                35.0f
+#define HW_DRONE_TRACK_FWD_SCALE              0.80f
+#define HW_DRONE_TRACK_ACCEL_MPS2             7.5f
+#define HW_DRONE_CENTER_HOLD_PX               8.0f
+#define HW_DRONE_CENTER_BURST_MS              260U
+#define HW_DRONE_LOST_HOLD_MS                 1500U
+#define HW_DRONE_LOST_HOLD_SPEED_SCALE        0.75f
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
