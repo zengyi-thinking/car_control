@@ -36,11 +36,22 @@
 #define HW_DRONE_TRACK_MIN_SPEED_MPS          0.55f
 #define HW_DRONE_TRACK_NEAR_PX                35.0f
 #define HW_DRONE_TRACK_FWD_SCALE              0.80f
-#define HW_DRONE_TRACK_ACCEL_MPS2             7.5f
+#define HW_DRONE_TRACK_RIGHT_SCALE            1.12f
+#define HW_DRONE_TRACK_ACCEL_MPS2             6.0f
 #define HW_DRONE_CENTER_HOLD_PX               8.0f
-#define HW_DRONE_CENTER_BURST_MS              260U
-#define HW_DRONE_LOST_HOLD_MS                 1500U
-#define HW_DRONE_LOST_HOLD_SPEED_SCALE        0.75f
+/* 踩灭中心信标后沿最后确认方向快速离开，避免低速起步卡在灯上。 */
+#define HW_DRONE_CENTER_BURST_SPEED_MPS       0.95f
+#define HW_DRONE_CENTER_BURST_MS              380U
+#define HW_DRONE_LOST_HOLD_MS                 2400U
+#define HW_DRONE_LOST_HOLD_START_SPEED_SCALE  0.75f
+/* 阶段1 微调: hold 结束时保留 20% 速度, 避免最后一帧速度直接归零产生硬切台阶.
+ * 真正解决 hold 退出硬停需要阶段2的 fade-out 逻辑, 此处只作为即时过渡. */
+#define HW_DRONE_LOST_HOLD_END_SPEED_SCALE    0.20f
+/* 阶段2 新增: hold 结束后追加一段平滑减速窗口.
+ * 在这段时间内保持 DRONE_TRACK 模式并沿 hold 方向逐渐减速到 0,
+ * 避免信标接力场景下"踩灭 A -> 等待 B 出现"期间的硬停台阶.
+ * fade 期间如果新信标被识别, 自然接管追踪 (slew 当前值即"惯性速度", 无缝接续). */
+#define HW_DRONE_LOST_HOLD_FADE_MS            600U
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
