@@ -98,6 +98,10 @@ static uint8 app_car_motion_status_flags(const chassis_status_t *status)
     {
         flags |= PROTO_CAR_MOTION_FLAG_ENABLED;
     }
+    if(status->pose_valid != 0U)
+    {
+        flags |= PROTO_CAR_MOTION_FLAG_MEASURED_VALID;
+    }
 
     return flags;
 }
@@ -248,6 +252,8 @@ void app_car_step(void)
     status = chassis_control_get_status();
     proto_drone_send_car_motion(app_car_mps_to_mmps(status->cmd_vx_body_mps),
                                 app_car_mps_to_mmps(status->cmd_vy_body_mps),
+                                app_car_mps_to_mmps(status->vel_vx_body_mps),
+                                app_car_mps_to_mmps(status->vel_vy_body_mps),
                                 app_car_motion_status_flags(status));
     if (status->enabled)
     {

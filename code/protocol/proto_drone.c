@@ -12,8 +12,8 @@ static proto_drone_data_t g_latest_drone;
 static uint8 g_drone_pending = 0U;
 static uint8 g_car_motion_tx_seq = 0U;
 
-#define PROTO_CAR_MOTION_FRAME_SIZE       9U
-#define PROTO_CAR_MOTION_CHECKSUM_INDEX   7U
+#define PROTO_CAR_MOTION_FRAME_SIZE       13U
+#define PROTO_CAR_MOTION_CHECKSUM_INDEX   11U
 
 static uint8 proto_drone_checksum(const uint8 *buf, uint8 len_without_checksum_and_tail)
 {
@@ -181,6 +181,8 @@ uint8 proto_drone_update(proto_drone_data_t *out)
 
 void proto_drone_send_car_motion(int16 cmd_vx_body_mmps,
                                  int16 cmd_vy_body_mmps,
+                                 int16 measured_vx_body_mmps,
+                                 int16 measured_vy_body_mmps,
                                  uint8 flags)
 {
 #if HW_DRONE_MOTION_STATUS_ENABLE != 0U
@@ -189,8 +191,10 @@ void proto_drone_send_car_motion(int16 cmd_vx_body_mmps,
     frame[0] = PROTO_CAR_MOTION_FRAME_HEAD;
     proto_drone_put_i16(frame, 1U, cmd_vx_body_mmps);
     proto_drone_put_i16(frame, 3U, cmd_vy_body_mmps);
-    frame[5] = flags;
-    frame[6] = g_car_motion_tx_seq;
+    proto_drone_put_i16(frame, 5U, measured_vx_body_mmps);
+    proto_drone_put_i16(frame, 7U, measured_vy_body_mmps);
+    frame[9] = flags;
+    frame[10] = g_car_motion_tx_seq;
     frame[PROTO_CAR_MOTION_CHECKSUM_INDEX] =
         proto_drone_checksum(frame, PROTO_CAR_MOTION_CHECKSUM_INDEX);
     frame[PROTO_CAR_MOTION_FRAME_SIZE - 1U] = PROTO_CAR_MOTION_FRAME_TAIL;
@@ -202,6 +206,8 @@ void proto_drone_send_car_motion(int16 cmd_vx_body_mmps,
 #else
     (void)cmd_vx_body_mmps;
     (void)cmd_vy_body_mmps;
+    (void)measured_vx_body_mmps;
+    (void)measured_vy_body_mmps;
     (void)flags;
 #endif
 }

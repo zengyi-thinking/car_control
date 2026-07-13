@@ -1103,9 +1103,9 @@ static void chassis_position_move_commit(float yaw_deg)
 }
 
 static void chassis_apply_body_command_slew_limit(float *vx_body_cmd,
-                                                  float *vy_body_cmd,
-                                                  float dt_s,
-                                                  float accel_mps2)
+                                                   float *vy_body_cmd,
+                                                   float dt_s,
+                                                   float accel_mps2)
 {
     const float max_step = accel_mps2 * dt_s;
     float cur_vx;
@@ -1120,11 +1120,22 @@ static void chassis_apply_body_command_slew_limit(float *vx_body_cmd,
         return;
     }
 
+    if ((!isfinite(*vx_body_cmd)) || (!isfinite(*vy_body_cmd)))
+    {
+        *vx_body_cmd = 0.0f;
+        *vy_body_cmd = 0.0f;
+    }
+
     /* Limit the velocity-change vector rather than each axis independently.
      * This keeps the physical acceleration within accel_mps2 in every direction
      * while allowing the command vector to rotate smoothly toward a moving beacon. */
     cur_vx = g_runtime.cmd_vx_body_state;
     cur_vy = g_runtime.cmd_vy_body_state;
+    if ((!isfinite(cur_vx)) || (!isfinite(cur_vy)))
+    {
+        cur_vx = 0.0f;
+        cur_vy = 0.0f;
+    }
     dv_x = *vx_body_cmd - cur_vx;
     dv_y = *vy_body_cmd - cur_vy;
     dv_norm = sqrtf((dv_x * dv_x) + (dv_y * dv_y));
@@ -1691,7 +1702,9 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         }
         else if (g_status.mode == CHASSIS_MODE_DRONE_TRACK)
         {
-            chassis_seed_command_states_from_odometry();
+            /* Keep the previous slew-limited command. Raw 5ms odometry can
+             * contain a quantization or timing spike and must never seed an
+             * automatic command directly when tracking is re-entered. */
             g_runtime.drone_error_filter_valid = 0U;
             chassis_drone_reset_hold_dir();
             if (!g_runtime.yaw_lock_valid)
@@ -1996,6 +2009,17 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                           (float)HW_MANUAL_MAX_DUTY);
             duty_ff = chassis_feedforward_duty(i, wheel_target_mps[i]);
             duty_raw = duty_ff + pid_compute(&g_wheel_pid[i], wheel_target_mps[i], g_runtime.odom.wheel_speed_mps[i], dt_s);
+            if (g_status.mode == CHASSIS_MODE_DRONE_TRACK)
+            {
+                const float duty_step = HW_DRONE_TRACK_DUTY_SLEW_PER_TICK;
+
+                if (isfinite(duty_step) && (duty_step > 0.0f))
+                {
+                    duty_raw = chassis_clamp(duty_raw,
+                                             g_status.motor_duty[i] - duty_step,
+                                             g_status.motor_duty[i] + duty_step);
+                }
+            }
             g_status.motor_duty[i] = chassis_clamp(duty_raw, -duty_limit, duty_limit);
 
             g_status.wheel_error_mps[i] = g_status.wheel_target_mps[i] - g_status.wheel_measured_mps[i];
