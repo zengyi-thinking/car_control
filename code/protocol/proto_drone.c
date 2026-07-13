@@ -1,6 +1,8 @@
 #include "protocol/proto_drone.h"
 
+#include "hardware/hw_config.h"
 #include "hardware/hw_board_pins.h"
+#include "scb/cy_scb_uart.h"
 #include "zf_driver_uart.h"
 
 static uint8 rx_buf[DRONE_FRAME_SIZE_MAX];
@@ -8,6 +10,10 @@ static uint8 rx_idx;
 static uint8 rx_expected_size;
 static proto_drone_data_t g_latest_drone;
 static uint8 g_drone_pending = 0U;
+static uint8 g_car_motion_tx_seq = 0U;
+
+#define PROTO_CAR_MOTION_FRAME_SIZE       9U
+#define PROTO_CAR_MOTION_CHECKSUM_INDEX   7U
 
 static uint8 proto_drone_checksum(const uint8 *buf, uint8 len_without_checksum_and_tail)
 {
@@ -29,6 +35,34 @@ static int16 proto_drone_read_i16(uint8 high, uint8 low)
 static uint16 proto_drone_read_u16(uint8 high, uint8 low)
 {
     return (uint16)(((uint16)high << 8) | low);
+}
+
+static void proto_drone_put_i16(uint8 *buf, uint8 index, int16 value)
+{
+    const uint16 raw = (uint16)value;
+
+    buf[index] = (uint8)(raw >> 8);
+    buf[(uint8)(index + 1U)] = (uint8)raw;
+}
+
+static uint8 proto_drone_try_write_car_motion(const uint8 *frame)
+{
+    volatile stc_SCB_t *scb = get_scb_module(HW_DRONE_UART);
+    uint32 fifo_free;
+
+    if((frame == 0) || (scb == 0))
+    {
+        return 0U;
+    }
+
+    fifo_free = Cy_SCB_GetFifoSize(scb) - Cy_SCB_UART_GetNumInTxFifo(scb);
+    if((Cy_SCB_UART_IsTxComplete(scb) == 0) || (fifo_free < PROTO_CAR_MOTION_FRAME_SIZE))
+    {
+        return 0U;
+    }
+
+    return (Cy_SCB_UART_PutArray(scb, (void *)frame, PROTO_CAR_MOTION_FRAME_SIZE)
+            == PROTO_CAR_MOTION_FRAME_SIZE) ? 1U : 0U;
 }
 
 static void proto_drone_reset_parser(void)
@@ -96,6 +130,7 @@ void proto_drone_init(void)
     uart_rx_interrupt(HW_DRONE_UART, 1U);
     proto_drone_reset_parser();
     g_drone_pending = 0U;
+    g_car_motion_tx_seq = 0U;
 }
 
 void proto_drone_on_byte(uint8 byte)
@@ -142,4 +177,31 @@ uint8 proto_drone_update(proto_drone_data_t *out)
     *out = g_latest_drone;
     g_drone_pending = 0U;
     return 1U;
+}
+
+void proto_drone_send_car_motion(int16 cmd_vx_body_mmps,
+                                 int16 cmd_vy_body_mmps,
+                                 uint8 flags)
+{
+#if HW_DRONE_MOTION_STATUS_ENABLE != 0U
+    uint8 frame[PROTO_CAR_MOTION_FRAME_SIZE] = {0U};
+
+    frame[0] = PROTO_CAR_MOTION_FRAME_HEAD;
+    proto_drone_put_i16(frame, 1U, cmd_vx_body_mmps);
+    proto_drone_put_i16(frame, 3U, cmd_vy_body_mmps);
+    frame[5] = flags;
+    frame[6] = g_car_motion_tx_seq;
+    frame[PROTO_CAR_MOTION_CHECKSUM_INDEX] =
+        proto_drone_checksum(frame, PROTO_CAR_MOTION_CHECKSUM_INDEX);
+    frame[PROTO_CAR_MOTION_FRAME_SIZE - 1U] = PROTO_CAR_MOTION_FRAME_TAIL;
+
+    if(proto_drone_try_write_car_motion(frame) != 0U)
+    {
+        g_car_motion_tx_seq++;
+    }
+#else
+    (void)cmd_vx_body_mmps;
+    (void)cmd_vy_body_mmps;
+    (void)flags;
+#endif
 }

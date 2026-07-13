@@ -1120,21 +1120,15 @@ static void chassis_apply_body_command_slew_limit(float *vx_body_cmd,
         return;
     }
 
-    /* Vector-magnitude slew instead of per-axis slew.
-     * Per-axis slew throttles a single axis when the required direction changes
-     * (e.g. beacon moves from ahead to the right), making the car trace an arc /
-     * detour instead of heading straight at the beacon. Limiting the MAGNITUDE of
-     * the velocity delta vector (|target - current|) lets the direction follow the
-     * live P-term unit vector immediately while still capping the acceleration, so
-     * the chassis accelerates/brakes smoothly but no longer lags on axis changes.
-     * max_dv_norm uses sqrt(2)*max_step so pure speed-up (both axes grow) keeps the
-     * same per-axis ceiling as before for motor-safety parity. */
+    /* Limit the velocity-change vector rather than each axis independently.
+     * This keeps the physical acceleration within accel_mps2 in every direction
+     * while allowing the command vector to rotate smoothly toward a moving beacon. */
     cur_vx = g_runtime.cmd_vx_body_state;
     cur_vy = g_runtime.cmd_vy_body_state;
     dv_x = *vx_body_cmd - cur_vx;
     dv_y = *vy_body_cmd - cur_vy;
     dv_norm = sqrtf((dv_x * dv_x) + (dv_y * dv_y));
-    max_dv_norm = 1.4142f * max_step;
+    max_dv_norm = max_step;
     if (dv_norm > max_dv_norm)
     {
         const float scale = max_dv_norm / dv_norm;

@@ -58,6 +58,50 @@ static uint8 app_drone_lost_hold_valid(void)
            (chassis_control_drone_lost_hold_ready() != 0U);
 }
 
+static int16 app_car_mps_to_mmps(float speed_mps)
+{
+    float speed_mmps = speed_mps * 1000.0f;
+
+    if(speed_mmps > (float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS)
+    {
+        speed_mmps = (float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS;
+    }
+    else if(speed_mmps < -(float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS)
+    {
+        speed_mmps = -(float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS;
+    }
+
+    return (int16)speed_mmps;
+}
+
+static uint8 app_car_motion_status_flags(const chassis_status_t *status)
+{
+    uint8 flags = 0U;
+
+    if(status == 0)
+    {
+        return 0U;
+    }
+    if(status->mode == CHASSIS_MODE_DRONE_TRACK)
+    {
+        flags |= PROTO_CAR_MOTION_FLAG_TRACK_ACTIVE;
+    }
+    if(status->drone_fresh != 0U)
+    {
+        flags |= PROTO_CAR_MOTION_FLAG_A4_FRESH;
+    }
+    if(status->drone_move_valid != 0U)
+    {
+        flags |= PROTO_CAR_MOTION_FLAG_MOVE_VALID;
+    }
+    if(status->enabled != 0U)
+    {
+        flags |= PROTO_CAR_MOTION_FLAG_ENABLED;
+    }
+
+    return flags;
+}
+
 static uint16 app_abs_i16(int16 value)
 {
     return (value < 0) ? (uint16)(-value) : (uint16)value;
@@ -202,6 +246,9 @@ void app_car_step(void)
     chassis_control_step(enc_counts, HW_CONTROL_PERIOD_S, &attitude);
 
     status = chassis_control_get_status();
+    proto_drone_send_car_motion(app_car_mps_to_mmps(status->cmd_vx_body_mps),
+                                app_car_mps_to_mmps(status->cmd_vy_body_mps),
+                                app_car_motion_status_flags(status));
     if (status->enabled)
     {
         chassis_control_get_motor_duty(motor_duty);

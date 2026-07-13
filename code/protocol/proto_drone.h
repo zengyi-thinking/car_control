@@ -14,6 +14,13 @@
 #define PROTO_DRONE_FLAG_HAS_YAW_ERR     (1U << 3)
 #define PROTO_DRONE_FLAG_FOLLOW_OK       (1U << 4)
 
+#define PROTO_CAR_MOTION_FRAME_HEAD       0xC5U
+#define PROTO_CAR_MOTION_FRAME_TAIL       0x5AU
+#define PROTO_CAR_MOTION_FLAG_TRACK_ACTIVE (1U << 0)
+#define PROTO_CAR_MOTION_FLAG_A4_FRESH     (1U << 1)
+#define PROTO_CAR_MOTION_FLAG_MOVE_VALID   (1U << 2)
+#define PROTO_CAR_MOTION_FLAG_ENABLED      (1U << 3)
+
 typedef struct
 {
     int16 v_x_px;
@@ -32,5 +39,8 @@ typedef struct
 void proto_drone_init(void);
 void proto_drone_on_byte(uint8 byte);
 uint8 proto_drone_update(proto_drone_data_t *out);
+void proto_drone_send_car_motion(int16 cmd_vx_body_mmps,
+                                 int16 cmd_vy_body_mmps,
+                                 uint8 flags);
 
 #endif
