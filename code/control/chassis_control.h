@@ -25,6 +25,14 @@ typedef enum
 
 typedef enum
 {
+    CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE = 0,
+    CHASSIS_BEACON_FOLLOW_EDGE_TRACK = 1,
+    CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE = 2,
+    CHASSIS_BEACON_FOLLOW_NEAR_PRESS = 3,
+} chassis_beacon_follow_state_t;
+
+typedef enum
+{
     CHASSIS_TUNE_PARAM_KP = 0,
     CHASSIS_TUNE_PARAM_KI = 1,
     CHASSIS_TUNE_PARAM_KD = 2,
@@ -82,6 +90,9 @@ typedef struct
     uint8 remote_fresh;
     uint8 drone_fresh;
     uint8 drone_move_valid;
+    chassis_beacon_follow_state_t drone_follow_state;
+    uint16 drone_follow_remaining_ms;
+    uint8 drone_hold_dir_valid;
     uint8 pose_valid;
     uint8 target_valid;
     uint8 heading_valid;
@@ -117,6 +128,7 @@ void chassis_control_reset(void);
 void chassis_control_set_mode(chassis_mode_t mode);
 void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, uint16 age_ms);
 void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms);
+uint8 chassis_control_drone_follow_ready(void);
 uint8 chassis_control_drone_lost_hold_ready(void);
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude);
 const chassis_status_t *chassis_control_get_status(void);

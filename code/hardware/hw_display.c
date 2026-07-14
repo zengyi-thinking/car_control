@@ -39,6 +39,18 @@ static const char *hw_display_mode_name(chassis_mode_t mode)
     }
 }
 
+static const char *hw_display_follow_name(chassis_beacon_follow_state_t state)
+{
+    switch (state)
+    {
+        case CHASSIS_BEACON_FOLLOW_EDGE_TRACK: return "EDGE";
+        case CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE: return "HOLD";
+        case CHASSIS_BEACON_FOLLOW_NEAR_PRESS: return "PRESS";
+        case CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE: return "WAIT";
+        default: return "UNK";
+    }
+}
+
 static void hw_display_pad_line(char *line)
 {
     uint8 len;
@@ -357,9 +369,10 @@ void hw_display_update(const chassis_status_t *status)
         hw_display_make_line(lines[3], "VBX ---- VBY ---- Y--");
     }
 
-    hw_display_make_line(lines[4], "VX %+1.2f VY %+1.2f",
-                         status->cmd_vy_body_mps,
-                         status->cmd_vx_body_mps);
+    hw_display_make_line(lines[4], "S %-5s T%04u D%u",
+                         hw_display_follow_name(status->drone_follow_state),
+                         (unsigned int)status->drone_follow_remaining_ms,
+                         (unsigned int)status->drone_hold_dir_valid);
 
     for (i = 0U; i < DISPLAY_USED_LINE_COUNT; ++i)
     {

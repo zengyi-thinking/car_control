@@ -10,8 +10,6 @@
 
 #define HW_REMOTE_TIMEOUT_MS                  150U
 #define HW_DRONE_TIMEOUT_MS                   280U
-#define HW_DRONE_MOTION_STATUS_ENABLE          1U
-#define HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS    2400
 
 #define HW_ENCODER_DISPLAY_DEADBAND           3
 
@@ -28,7 +26,7 @@
 
 #define HW_MANUAL_MAX_DUTY                    9000
 #define HW_DRONE_TRACK_MAX_DUTY               9000
-#define HW_DRONE_TRACK_DUTY_SLEW_PER_TICK     600.0f
+#define HW_DRONE_TRACK_DUTY_SLEW_PER_TICK     500.0f
 #define HW_MANUAL_MAX_LINEAR_SPEED_MPS        1.10f
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
@@ -36,8 +34,8 @@
 /* 自动追灯基准小幅提速，前后保持保守，侧向补偿麦轮横移效率。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.20f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.62f
-/* 信标追踪采用外圈快追、近圈降速、中心短促压灯。 */
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.58f
+/* 信标追踪采用外圈快追、近圈降速、中心持续压灯。 */
 #define HW_DRONE_TRACK_SPEED_MPS              1.25f
 #define HW_DRONE_TRACK_MIN_SPEED_MPS          0.58f
 #define HW_DRONE_TRACK_NEAR_PX                50.0f
@@ -45,15 +43,17 @@
 #define HW_DRONE_TRACK_RIGHT_SCALE            1.08f
 /* 自动追灯使用独立矢量加速度上限，避免有线无人机被突然拉拽。 */
 #define HW_DRONE_TRACK_ACCEL_MPS2             2.0f
-#define HW_DRONE_CENTER_HOLD_PX               8.0f
-/* 中心区速度与外圈最低速度连续，避免接近信标时突然加速越过目标。 */
-#define HW_DRONE_CENTER_BURST_SPEED_MPS       0.58f
-#define HW_DRONE_CENTER_BURST_MS              380U
-#define HW_DRONE_LOST_HOLD_MS                 1500U
-#define HW_DRONE_LOST_HOLD_START_SPEED_SCALE  0.42f
-/* hold 末段保留低速，再由 fade 平滑收零，避免信标交接时硬停。 */
-#define HW_DRONE_LOST_HOLD_END_SPEED_SCALE    0.14f
-/* hold 后追加短 fade 窗口，保留信标交接平滑性，同时限制盲走距离。 */
+#define HW_DRONE_NEAR_ENTER_PX                8.0f
+#define HW_DRONE_NEAR_EXIT_PX                 12.0f
+#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.64f
+#define HW_DRONE_NEAR_PRESS_DIR_ALPHA         0.40f
+#define HW_DRONE_NEAR_PRESS_DIR_MIN_PX        2.5f
+#define HW_DRONE_NEAR_PRESS_DIR_MIN_DOT       0.15f
+#define HW_DRONE_NEAR_PRESS_LOST_MS           250U
+#define HW_DRONE_NEAR_PRESS_MAX_MS            1200U
+/* 边缘信标丢失后的续航总时长，末段衰减包含在总时长内。 */
+#define HW_DRONE_LOST_HOLD_MS                 4000U
+#define HW_DRONE_LOST_HOLD_SPEED_SCALE        0.60f
 #define HW_DRONE_LOST_HOLD_FADE_MS            350U
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f

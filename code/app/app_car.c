@@ -50,60 +50,9 @@ static uint8 app_drone_move_valid(void)
            ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U);
 }
 
-static uint8 app_drone_lost_hold_valid(void)
+static uint8 app_drone_follow_valid(void)
 {
-    return app_drone_fresh() &&
-           ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) == 0U) &&
-           ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U) &&
-           (chassis_control_drone_lost_hold_ready() != 0U);
-}
-
-static int16 app_car_mps_to_mmps(float speed_mps)
-{
-    float speed_mmps = speed_mps * 1000.0f;
-
-    if(speed_mmps > (float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS)
-    {
-        speed_mmps = (float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS;
-    }
-    else if(speed_mmps < -(float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS)
-    {
-        speed_mmps = -(float)HW_DRONE_MOTION_STATUS_MAX_ABS_MMPS;
-    }
-
-    return (int16)speed_mmps;
-}
-
-static uint8 app_car_motion_status_flags(const chassis_status_t *status)
-{
-    uint8 flags = 0U;
-
-    if(status == 0)
-    {
-        return 0U;
-    }
-    if(status->mode == CHASSIS_MODE_DRONE_TRACK)
-    {
-        flags |= PROTO_CAR_MOTION_FLAG_TRACK_ACTIVE;
-    }
-    if(status->drone_fresh != 0U)
-    {
-        flags |= PROTO_CAR_MOTION_FLAG_A4_FRESH;
-    }
-    if(status->drone_move_valid != 0U)
-    {
-        flags |= PROTO_CAR_MOTION_FLAG_MOVE_VALID;
-    }
-    if(status->enabled != 0U)
-    {
-        flags |= PROTO_CAR_MOTION_FLAG_ENABLED;
-    }
-    if(status->pose_valid != 0U)
-    {
-        flags |= PROTO_CAR_MOTION_FLAG_MEASURED_VALID;
-    }
-
-    return flags;
+    return chassis_control_drone_follow_ready();
 }
 
 static uint16 app_abs_i16(int16 value)
@@ -126,8 +75,8 @@ static void app_update_mode(void)
 {
     const uint8 remote_override = app_remote_manual_override();
     const uint8 drone_move_valid = app_drone_move_valid();
-    const uint8 drone_lost_hold_valid = app_drone_lost_hold_valid();
-    const uint8 drone_track_valid = ((drone_move_valid != 0U) || (drone_lost_hold_valid != 0U)) ? 1U : 0U;
+    const uint8 drone_follow_valid = app_drone_follow_valid();
+    const uint8 drone_track_valid = ((drone_move_valid != 0U) || (drone_follow_valid != 0U)) ? 1U : 0U;
 
     if (g_chassis_wheel_pid_tune_enabled)
     {
@@ -178,7 +127,7 @@ static void app_update_mode(void)
                 g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
                 g_app_runtime.drone_track_exit_pending = 0U;
             }
-            /* 否则保持 DRONE_TRACK: 让 lost_hold 等机制有时间响应,
+            /* 否则保持 DRONE_TRACK: 让续航状态机有时间响应,
              * 避免信标抖动 1~2 帧就触发模式切换 */
         }
         else
@@ -250,11 +199,6 @@ void app_car_step(void)
     chassis_control_step(enc_counts, HW_CONTROL_PERIOD_S, &attitude);
 
     status = chassis_control_get_status();
-    proto_drone_send_car_motion(app_car_mps_to_mmps(status->cmd_vx_body_mps),
-                                app_car_mps_to_mmps(status->cmd_vy_body_mps),
-                                app_car_mps_to_mmps(status->vel_vx_body_mps),
-                                app_car_mps_to_mmps(status->vel_vy_body_mps),
-                                app_car_motion_status_flags(status));
     if (status->enabled)
     {
         chassis_control_get_motor_duty(motor_duty);

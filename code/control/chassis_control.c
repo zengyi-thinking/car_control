@@ -140,14 +140,14 @@ typedef struct
     float drone_error_y_px;
     uint8 drone_frame_fresh;       /* 本拍是否有新视觉帧 (边沿信号) */
     uint8 drone_hold_dir_valid;
-    uint16 drone_track_hold_ms;
-    uint16 drone_center_burst_ms;
     float drone_hold_dir_x;
     float drone_hold_dir_y;
-    /* 阶段2 新增: hold 结束后的平滑减速窗口. hold_ms 归 0 时启动 fade,
-     * 让底盘沿 hold 方向继续按比例衰减到 0 (默认 600ms),
-     * 期间新信标出现时自然接管, 不会出现"从 0 起步"的台阶. */
-    uint16 drone_fade_remaining_ms;
+    float drone_press_origin_dir_x;
+    float drone_press_origin_dir_y;
+    chassis_beacon_follow_state_t drone_follow_state;
+    uint16 drone_edge_remaining_ms;
+    uint16 drone_press_remaining_ms;
+    uint16 drone_press_lost_remaining_ms;
 } chassis_runtime_t;
 
 static chassis_runtime_t g_runtime;
@@ -264,11 +264,17 @@ static void chassis_reset_command_states(void)
     g_runtime.drone_error_y_px = 0.0f;
     g_runtime.drone_frame_fresh = 0U;
     g_runtime.drone_hold_dir_valid = 0U;
-    g_runtime.drone_track_hold_ms = 0U;
-    g_runtime.drone_center_burst_ms = 0U;
     g_runtime.drone_hold_dir_x = 0.0f;
     g_runtime.drone_hold_dir_y = 1.0f;
-    g_runtime.drone_fade_remaining_ms = 0U;
+    g_runtime.drone_press_origin_dir_x = 0.0f;
+    g_runtime.drone_press_origin_dir_y = 1.0f;
+    g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE;
+    g_runtime.drone_edge_remaining_ms = 0U;
+    g_runtime.drone_press_remaining_ms = 0U;
+    g_runtime.drone_press_lost_remaining_ms = 0U;
+    g_status.drone_follow_state = CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE;
+    g_status.drone_follow_remaining_ms = 0U;
+    g_status.drone_hold_dir_valid = 0U;
 }
 
 static void chassis_seed_command_states_from_odometry(void)
@@ -787,14 +793,17 @@ static void chassis_drone_filter_error(float raw_x_px, float raw_y_px, float *ou
     }
 }
 
-static void chassis_drone_reset_hold_dir(void)
+static void chassis_drone_reset_follow(void)
 {
     g_runtime.drone_hold_dir_valid = 0U;
-    g_runtime.drone_track_hold_ms = 0U;
-    g_runtime.drone_center_burst_ms = 0U;
     g_runtime.drone_hold_dir_x = 0.0f;
     g_runtime.drone_hold_dir_y = 1.0f;
-    g_runtime.drone_fade_remaining_ms = 0U;
+    g_runtime.drone_press_origin_dir_x = 0.0f;
+    g_runtime.drone_press_origin_dir_y = 1.0f;
+    g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE;
+    g_runtime.drone_edge_remaining_ms = 0U;
+    g_runtime.drone_press_remaining_ms = 0U;
+    g_runtime.drone_press_lost_remaining_ms = 0U;
 }
 
 static void chassis_drone_store_hold_dir(float dir_x, float dir_y)
@@ -812,37 +821,83 @@ static void chassis_drone_store_hold_dir(float dir_x, float dir_y)
     g_runtime.drone_hold_dir_valid = 1U;
 }
 
-static uint8 chassis_drone_lost_hold_active(void)
+static void chassis_drone_update_near_press_dir(float err_x_px,
+                                                float err_y_px,
+                                                float dist_px)
 {
-    /* 阶段2: fade 期间也算 hold 活跃, 这样 app 层 (chassis_control_drone_lost_hold_ready)
-     * 能在 fade 阶段继续保持 DRONE_TRACK 模式, 而不是切到 SAFE_STOP.
-     * 注意 fade 与 hold 的方向相同, 都由 drone_hold_dir 驱动. */
-    return ((g_runtime.drone_track_hold_ms > 0U || g_runtime.drone_fade_remaining_ms > 0U) &&
-            (g_runtime.drone_hold_dir_valid != 0U)) ? 1U : 0U;
+    float candidate_x;
+    float candidate_y;
+    float origin_dot;
+    float alpha;
+    float blended_x;
+    float blended_y;
+
+    if((g_runtime.drone_frame_fresh == 0U) ||
+       (g_runtime.drone_hold_dir_valid == 0U) ||
+       (dist_px < HW_DRONE_NEAR_PRESS_DIR_MIN_PX))
+    {
+        return;
+    }
+
+    candidate_x = err_x_px / dist_px;
+    candidate_y = err_y_px / dist_px;
+    origin_dot = (candidate_x * g_runtime.drone_press_origin_dir_x) +
+                 (candidate_y * g_runtime.drone_press_origin_dir_y);
+    if(origin_dot < HW_DRONE_NEAR_PRESS_DIR_MIN_DOT)
+    {
+        return;
+    }
+
+    alpha = chassis_clamp(HW_DRONE_NEAR_PRESS_DIR_ALPHA, 0.0f, 1.0f);
+    blended_x = g_runtime.drone_hold_dir_x +
+                (alpha * (candidate_x - g_runtime.drone_hold_dir_x));
+    blended_y = g_runtime.drone_hold_dir_y +
+                (alpha * (candidate_y - g_runtime.drone_hold_dir_y));
+    chassis_drone_store_hold_dir(blended_x, blended_y);
 }
 
-static void chassis_drone_tick_lost_hold_timer(void)
+static void chassis_drone_tick_timer(uint16 *remaining_ms)
 {
-    if(g_runtime.drone_track_hold_ms > HW_CONTROL_PERIOD_MS)
+    if(remaining_ms == 0)
     {
-        g_runtime.drone_track_hold_ms = (uint16)(g_runtime.drone_track_hold_ms - HW_CONTROL_PERIOD_MS);
+        return;
+    }
+
+    if(*remaining_ms > HW_CONTROL_PERIOD_MS)
+    {
+        *remaining_ms = (uint16)(*remaining_ms - HW_CONTROL_PERIOD_MS);
     }
     else
     {
-        g_runtime.drone_track_hold_ms = 0U;
+        *remaining_ms = 0U;
     }
 }
 
-static void chassis_drone_tick_center_burst_timer(void)
+static void chassis_drone_enter_wait_next_edge(void)
 {
-    if(g_runtime.drone_center_burst_ms > HW_CONTROL_PERIOD_MS)
+    chassis_drone_reset_follow();
+    g_runtime.drone_error_filter_valid = 0U;
+    g_runtime.cmd_vx_body_state = 0.0f;
+    g_runtime.cmd_vy_body_state = 0.0f;
+}
+
+static void chassis_drone_publish_follow_status(void)
+{
+    uint16 remaining_ms = 0U;
+
+    if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_TRACK) ||
+       (g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE))
     {
-        g_runtime.drone_center_burst_ms = (uint16)(g_runtime.drone_center_burst_ms - HW_CONTROL_PERIOD_MS);
+        remaining_ms = g_runtime.drone_edge_remaining_ms;
     }
-    else
+    else if(g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS)
     {
-        g_runtime.drone_center_burst_ms = 0U;
+        remaining_ms = g_runtime.drone_press_remaining_ms;
     }
+
+    g_status.drone_follow_state = g_runtime.drone_follow_state;
+    g_status.drone_follow_remaining_ms = remaining_ms;
+    g_status.drone_hold_dir_valid = g_runtime.drone_hold_dir_valid;
 }
 
 static float chassis_drone_speed_from_distance(float dist_px)
@@ -854,13 +909,13 @@ static float chassis_drone_speed_from_distance(float dist_px)
         return HW_DRONE_TRACK_SPEED_MPS;
     }
 
-    if(dist_px <= HW_DRONE_CENTER_HOLD_PX)
+    if(dist_px <= HW_DRONE_NEAR_ENTER_PX)
     {
         return HW_DRONE_TRACK_MIN_SPEED_MPS;
     }
 
-    t = (dist_px - HW_DRONE_CENTER_HOLD_PX) /
-        (HW_DRONE_TRACK_NEAR_PX - HW_DRONE_CENTER_HOLD_PX);
+    t = (dist_px - HW_DRONE_NEAR_ENTER_PX) /
+        (HW_DRONE_TRACK_NEAR_PX - HW_DRONE_NEAR_ENTER_PX);
     t = chassis_clamp(t, 0.0f, 1.0f);
     return HW_DRONE_TRACK_MIN_SPEED_MPS +
            ((HW_DRONE_TRACK_SPEED_MPS - HW_DRONE_TRACK_MIN_SPEED_MPS) * t);
@@ -895,147 +950,224 @@ static void chassis_drone_vector_to_command(float dir_x,
     *vy_body_cmd = HW_DRONE_RIGHT_SIGN * v_x;
 }
 
-/* Beacon tracking command.
- * 外圈按当前 V/B 方向快速追, 近圈按距离降速。进入中心框后只沿最后方向
- * 短促压灯, 计时结束后让速度命令回零, 但保留最后方向供后续丢灯保持使用。 */
-static void chassis_drone_track_compute_command(float err_x_px,
-                                                float err_y_px,
-                                                float dist_px,
-                                                float dt_s,
-                                                float *vx_body_cmd,
-                                                float *vy_body_cmd)
+static void chassis_drone_edge_track_command(float err_x_px,
+                                             float err_y_px,
+                                             float dist_px,
+                                             float *vx_body_cmd,
+                                             float *vy_body_cmd)
 {
     float dir_x;
     float dir_y;
     float speed_mps;
 
-    if ((vx_body_cmd == 0) || (vy_body_cmd == 0))
+    if(dist_px <= 0.5f)
     {
-        return;
-    }
-
-    if (dist_px > HW_DRONE_CENTER_HOLD_PX)
-    {
-        dir_x = err_x_px / dist_px;
-        dir_y = err_y_px / dist_px;
-        chassis_drone_store_hold_dir(dir_x, dir_y);
-        g_runtime.drone_center_burst_ms = HW_DRONE_CENTER_BURST_MS;
-        g_runtime.drone_track_hold_ms = HW_DRONE_LOST_HOLD_MS;
-        speed_mps = chassis_drone_speed_from_distance(dist_px);
-        chassis_drone_vector_to_command(dir_x,
-                                         dir_y,
-                                         speed_mps,
-                                         vx_body_cmd,
-                                         vy_body_cmd);
-        return;
-    }
-
-    if (g_runtime.drone_center_burst_ms == 0U)
-    {
-        /* Keep the 1.5s last-direction hold armed. If the beacon disappears
-         * after a centered press, DRONE_TRACK continues smoothly instead of
-         * stopping before the next beacon can be reacquired. */
         *vx_body_cmd = 0.0f;
         *vy_body_cmd = 0.0f;
         return;
     }
 
-    if (g_runtime.drone_hold_dir_valid != 0U)
+    dir_x = err_x_px / dist_px;
+    dir_y = err_y_px / dist_px;
+    if((g_runtime.drone_frame_fresh != 0U) ||
+       (g_runtime.drone_hold_dir_valid == 0U) ||
+       (g_runtime.drone_follow_state != CHASSIS_BEACON_FOLLOW_EDGE_TRACK))
     {
-        dir_x = g_runtime.drone_hold_dir_x;
-        dir_y = g_runtime.drone_hold_dir_y;
-    }
-    else if (dist_px > 0.5f)
-    {
-        dir_x = err_x_px / dist_px;
-        dir_y = err_y_px / dist_px;
         chassis_drone_store_hold_dir(dir_x, dir_y);
+        g_runtime.drone_edge_remaining_ms = HW_DRONE_LOST_HOLD_MS;
     }
     else
     {
-        dir_x = 0.0f;
-        dir_y = 1.0f;
-        chassis_drone_store_hold_dir(dir_x, dir_y);
+        chassis_drone_tick_timer(&g_runtime.drone_edge_remaining_ms);
     }
 
-    if(dt_s > 0.0f)
-    {
-        chassis_drone_tick_center_burst_timer();
-    }
-    g_runtime.drone_track_hold_ms = HW_DRONE_LOST_HOLD_MS;
+    g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_EDGE_TRACK;
+    g_runtime.drone_press_remaining_ms = 0U;
+    g_runtime.drone_press_lost_remaining_ms = 0U;
+    speed_mps = chassis_drone_speed_from_distance(dist_px);
     chassis_drone_vector_to_command(dir_x,
                                      dir_y,
-                                     HW_DRONE_CENTER_BURST_SPEED_MPS,
+                                     speed_mps,
                                      vx_body_cmd,
                                      vy_body_cmd);
 }
 
-static uint8 chassis_drone_lost_hold_command(float *vx_body_cmd, float *vy_body_cmd)
+static uint8 chassis_drone_near_press_command(uint8 beacon_visible,
+                                              float err_x_px,
+                                              float err_y_px,
+                                              float dist_px,
+                                              float *vx_body_cmd,
+                                              float *vy_body_cmd)
 {
-    float hold_progress;
-    float hold_speed_scale;
-    float fade_progress;
-    float fade_speed_scale;
+    if(g_runtime.drone_follow_state != CHASSIS_BEACON_FOLLOW_NEAR_PRESS)
+    {
+        if((g_runtime.drone_hold_dir_valid == 0U) && (dist_px > 0.5f))
+        {
+            chassis_drone_store_hold_dir(err_x_px / dist_px, err_y_px / dist_px);
+        }
 
-    if((vx_body_cmd == 0) || (vy_body_cmd == 0) || (chassis_drone_lost_hold_active() == 0U))
+        if(g_runtime.drone_hold_dir_valid == 0U)
+        {
+            chassis_drone_enter_wait_next_edge();
+            return 0U;
+        }
+
+        g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_NEAR_PRESS;
+        g_runtime.drone_edge_remaining_ms = 0U;
+        g_runtime.drone_press_remaining_ms = HW_DRONE_NEAR_PRESS_MAX_MS;
+        g_runtime.drone_press_lost_remaining_ms = HW_DRONE_NEAR_PRESS_LOST_MS;
+        g_runtime.drone_press_origin_dir_x = g_runtime.drone_hold_dir_x;
+        g_runtime.drone_press_origin_dir_y = g_runtime.drone_hold_dir_y;
+    }
+
+    if((g_runtime.drone_press_remaining_ms == 0U) ||
+       ((beacon_visible == 0U) && (g_runtime.drone_press_lost_remaining_ms == 0U)))
+    {
+        chassis_drone_enter_wait_next_edge();
+        return 0U;
+    }
+
+    if(beacon_visible != 0U)
+    {
+        g_runtime.drone_press_lost_remaining_ms = HW_DRONE_NEAR_PRESS_LOST_MS;
+        chassis_drone_update_near_press_dir(err_x_px, err_y_px, dist_px);
+    }
+
+    chassis_drone_vector_to_command(g_runtime.drone_hold_dir_x,
+                                     g_runtime.drone_hold_dir_y,
+                                     HW_DRONE_NEAR_PRESS_SPEED_MPS,
+                                     vx_body_cmd,
+                                     vy_body_cmd);
+    chassis_drone_tick_timer(&g_runtime.drone_press_remaining_ms);
+    if(beacon_visible == 0U)
+    {
+        chassis_drone_tick_timer(&g_runtime.drone_press_lost_remaining_ms);
+    }
+
+    if((g_runtime.drone_press_remaining_ms == 0U) ||
+       ((beacon_visible == 0U) && (g_runtime.drone_press_lost_remaining_ms == 0U)))
+    {
+        chassis_drone_enter_wait_next_edge();
+    }
+    return 1U;
+}
+
+/* 有效信标按近灯锁存状态分类，状态切换后的速度仍由外层矢量斜坡约束。 */
+static void chassis_drone_track_compute_command(float err_x_px,
+                                                float err_y_px,
+                                                float dist_px,
+                                                float *vx_body_cmd,
+                                                float *vy_body_cmd)
+{
+    if ((vx_body_cmd == 0) || (vy_body_cmd == 0))
+    {
+        return;
+    }
+
+    if(g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE)
+    {
+        if(dist_px >= HW_DRONE_NEAR_EXIT_PX)
+        {
+            chassis_drone_edge_track_command(err_x_px, err_y_px, dist_px,
+                                             vx_body_cmd, vy_body_cmd);
+        }
+        else
+        {
+            *vx_body_cmd = 0.0f;
+            *vy_body_cmd = 0.0f;
+        }
+        return;
+    }
+
+    if(g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS)
+    {
+        if(dist_px >= HW_DRONE_NEAR_EXIT_PX)
+        {
+            g_runtime.drone_error_filter_valid = 0U;
+            chassis_drone_edge_track_command(err_x_px, err_y_px, dist_px,
+                                             vx_body_cmd, vy_body_cmd);
+        }
+        else
+        {
+            (void)chassis_drone_near_press_command(1U,
+                                                   err_x_px,
+                                                   err_y_px,
+                                                   dist_px,
+                                                   vx_body_cmd,
+                                                   vy_body_cmd);
+        }
+        return;
+    }
+
+    if(dist_px <= HW_DRONE_NEAR_ENTER_PX)
+    {
+        if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE) &&
+           (dist_px > 0.5f))
+        {
+            chassis_drone_store_hold_dir(err_x_px / dist_px, err_y_px / dist_px);
+        }
+        (void)chassis_drone_near_press_command(1U,
+                                               err_x_px,
+                                               err_y_px,
+                                               dist_px,
+                                               vx_body_cmd,
+                                               vy_body_cmd);
+    }
+    else
+    {
+        chassis_drone_edge_track_command(err_x_px, err_y_px, dist_px,
+                                         vx_body_cmd, vy_body_cmd);
+    }
+}
+
+static uint8 chassis_drone_lost_command(float *vx_body_cmd, float *vy_body_cmd)
+{
+    float fade_progress;
+    float speed_scale = HW_DRONE_LOST_HOLD_SPEED_SCALE;
+
+    if((vx_body_cmd == 0) || (vy_body_cmd == 0))
     {
         return 0U;
     }
 
-    /* [A] hold 阶段: 沿 hold_dir 跑, 速度按 hold_progress 从 START 线性衰减到 END */
-    if(g_runtime.drone_track_hold_ms > 0U)
+    if(g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS)
     {
-        hold_progress = (HW_DRONE_LOST_HOLD_MS > 0U)
-                      ? ((float)g_runtime.drone_track_hold_ms / (float)HW_DRONE_LOST_HOLD_MS)
-                      : 0.0f;
-        hold_progress = chassis_clamp(hold_progress, 0.0f, 1.0f);
-        hold_speed_scale = HW_DRONE_LOST_HOLD_END_SPEED_SCALE
-                         + (hold_progress * (HW_DRONE_LOST_HOLD_START_SPEED_SCALE
-                                           - HW_DRONE_LOST_HOLD_END_SPEED_SCALE));
-
-        chassis_drone_vector_to_command(g_runtime.drone_hold_dir_x,
-                                         g_runtime.drone_hold_dir_y,
-                                         HW_DRONE_TRACK_SPEED_MPS * hold_speed_scale,
-                                         vx_body_cmd,
-                                         vy_body_cmd);
-
-        /* hold 即将结束 (本帧就会归 0), 启动 fade 窗口, 避免速度硬切到 0 */
-        if(g_runtime.drone_track_hold_ms <= HW_CONTROL_PERIOD_MS)
-        {
-            g_runtime.drone_track_hold_ms = 0U;
-            g_runtime.drone_fade_remaining_ms = HW_DRONE_LOST_HOLD_FADE_MS;
-        }
-        else
-        {
-            chassis_drone_tick_lost_hold_timer();
-        }
-        return 1U;
+        return chassis_drone_near_press_command(0U, 0.0f, 0.0f, 0.0f,
+                                                vx_body_cmd, vy_body_cmd);
     }
 
-    /* [B] fade 阶段: hold 已结束, 速度从 END_SPEED_SCALE 继续按 fade_progress 平滑衰减到 0.
-     * 阶段2 核心: 让底盘在 hold 结束后继续滑行一段 (默认 600ms), 避免硬停台阶.
-     * 期间新信标出现时, chassis_drone_track_compute_command 会重新接管追踪, slew 以
-     * 当前速度为起点平滑过渡, 不会出现"从 0 起步"的台阶. */
-    fade_progress = (HW_DRONE_LOST_HOLD_FADE_MS > 0U)
-                  ? ((float)g_runtime.drone_fade_remaining_ms / (float)HW_DRONE_LOST_HOLD_FADE_MS)
-                  : 0.0f;
-    fade_progress = chassis_clamp(fade_progress, 0.0f, 1.0f);
-    /* fade_progress: 1 -> 0, 速度从 END_SPEED_SCALE * HW_DRONE_TRACK_SPEED_MPS 平滑到 0 */
-    fade_speed_scale = HW_DRONE_LOST_HOLD_END_SPEED_SCALE * fade_progress;
+    if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_TRACK) &&
+       (g_runtime.drone_hold_dir_valid != 0U) &&
+       (g_runtime.drone_edge_remaining_ms > 0U))
+    {
+        g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE;
+    }
+
+    if((g_runtime.drone_follow_state != CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE) ||
+       (g_runtime.drone_hold_dir_valid == 0U) ||
+       (g_runtime.drone_edge_remaining_ms == 0U))
+    {
+        chassis_drone_enter_wait_next_edge();
+        return 0U;
+    }
+
+    if((HW_DRONE_LOST_HOLD_FADE_MS > 0U) &&
+       (g_runtime.drone_edge_remaining_ms <= HW_DRONE_LOST_HOLD_FADE_MS))
+    {
+        fade_progress = (float)g_runtime.drone_edge_remaining_ms /
+                        (float)HW_DRONE_LOST_HOLD_FADE_MS;
+        speed_scale *= chassis_clamp(fade_progress, 0.0f, 1.0f);
+    }
 
     chassis_drone_vector_to_command(g_runtime.drone_hold_dir_x,
                                      g_runtime.drone_hold_dir_y,
-                                     HW_DRONE_TRACK_SPEED_MPS * fade_speed_scale,
+                                     HW_DRONE_TRACK_SPEED_MPS * speed_scale,
                                      vx_body_cmd,
                                      vy_body_cmd);
-
-    if(g_runtime.drone_fade_remaining_ms > HW_CONTROL_PERIOD_MS)
+    chassis_drone_tick_timer(&g_runtime.drone_edge_remaining_ms);
+    if(g_runtime.drone_edge_remaining_ms == 0U)
     {
-        g_runtime.drone_fade_remaining_ms -= HW_CONTROL_PERIOD_MS;
-    }
-    else
-    {
-        g_runtime.drone_fade_remaining_ms = 0U;
+        chassis_drone_enter_wait_next_edge();
     }
     return 1U;
 }
@@ -1555,28 +1687,34 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
     g_status.drone_beacon_conf_permille = g_runtime.drone.beacon_conf_permille;
 }
 
-uint8 chassis_control_drone_lost_hold_ready(void)
+uint8 chassis_control_drone_follow_ready(void)
 {
-    /* hold 阶段: 必须有 VLAMP, 依赖信标残留信息.
-     * 注意这里不复用 chassis_drone_lost_hold_active (它已经把 fade 算成 active),
-     * 否则 fade 阶段的判定逻辑会和 hold 阶段耦合, 影响 VLAMP 检查. */
-    if(g_runtime.drone_track_hold_ms > 0U && g_runtime.drone_hold_dir_valid != 0U)
+    if(g_runtime.drone_hold_dir_valid == 0U)
     {
-        if((g_runtime.drone.flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U)
-        {
-            return 1U;
-        }
+        return 0U;
     }
 
-    /* 阶段2: fade 阶段不依赖 VLAMP. 一旦 fade 启动就让它跑完, 否则
-     * 信标完全丢失时 VLAMP 立即变 0 会导致 app 层切到 SAFE_STOP,
-     * fade 中断, 出现"还没滑完就硬停"的台阶. */
-    if(g_runtime.drone_fade_remaining_ms > 0U && g_runtime.drone_hold_dir_valid != 0U)
+    if(((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_TRACK) ||
+        (g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE)) &&
+       (g_runtime.drone_edge_remaining_ms > 0U))
+    {
+        return 1U;
+    }
+
+    if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS) &&
+       (g_runtime.drone_press_remaining_ms > 0U) &&
+       ((g_status.drone_move_valid != 0U) ||
+        (g_runtime.drone_press_lost_remaining_ms > 0U)))
     {
         return 1U;
     }
 
     return 0U;
+}
+
+uint8 chassis_control_drone_lost_hold_ready(void)
+{
+    return chassis_control_drone_follow_ready();
 }
 
 void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_attitude_t *attitude)
@@ -1684,7 +1822,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             (g_status.mode != CHASSIS_MODE_DRONE_TRACK))
         {
             g_runtime.drone_error_filter_valid = 0U;
-            chassis_drone_reset_hold_dir();
+            chassis_drone_reset_follow();
         }
 
         if (g_status.mode == CHASSIS_MODE_SAFE_STOP)
@@ -1706,7 +1844,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
              * contain a quantization or timing spike and must never seed an
              * automatic command directly when tracking is re-entered. */
             g_runtime.drone_error_filter_valid = 0U;
-            chassis_drone_reset_hold_dir();
+            chassis_drone_reset_follow();
             if (!g_runtime.yaw_lock_valid)
             {
                 chassis_reset_heading_controller(yaw_deg);
@@ -1885,12 +2023,8 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             {
                 float vb_x_px;
                 float vb_y_px;
+                float vb_raw_dist_px;
                 float vb_dist_px;
-
-                /* 阶段2: 新信标被识别, 接管追踪, 重置 fade 窗口.
-                 * 不需要清零 cmd_v*_body_state: slew 以当前惯性速度为起点,
-                 * 平滑过渡到新信标的目标方向, 实现"接力追踪"的无缝接续. */
-                g_runtime.drone_fade_remaining_ms = 0U;
 
                 chassis_drone_compensate_yaw_error((float)g_runtime.drone.vb_x_px,
                                                    (float)g_runtime.drone.vb_y_px,
@@ -1898,6 +2032,15 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                                                    g_runtime.drone.flags,
                                                    &vb_x_px,
                                                    &vb_y_px);
+                vb_raw_dist_px = chassis_drone_error_distance(vb_x_px, vb_y_px);
+                if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE) ||
+                   (((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS) ||
+                     (g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE)) &&
+                    (vb_raw_dist_px >= HW_DRONE_NEAR_EXIT_PX)))
+                {
+                    /* 新边缘信标第一帧直接成为滤波起点，方向变化交给速度斜坡处理。 */
+                    g_runtime.drone_error_filter_valid = 0U;
+                }
                 chassis_drone_filter_error(vb_x_px,
                                            vb_y_px,
                                            &vb_x_px,
@@ -1907,7 +2050,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 chassis_drone_track_compute_command(vb_x_px,
                                                      vb_y_px,
                                                      vb_dist_px,
-                                                     dt_s,
                                                      &vx_body_cmd,
                                                      &vy_body_cmd);
                 chassis_apply_body_command_slew_limit(&vx_body_cmd,
@@ -1920,9 +2062,9 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
             }
-            else if (chassis_control_drone_lost_hold_ready() != 0U)
+            else if (chassis_control_drone_follow_ready() != 0U)
             {
-                if (chassis_drone_lost_hold_command(&vx_body_cmd, &vy_body_cmd) != 0U)
+                if (chassis_drone_lost_command(&vx_body_cmd, &vy_body_cmd) != 0U)
                 {
                     chassis_apply_body_command_slew_limit(&vx_body_cmd,
                                                           &vy_body_cmd,
@@ -1937,8 +2079,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             }
             else
             {
-                g_runtime.drone_error_filter_valid = 0U;
-                chassis_drone_reset_hold_dir();
+                chassis_drone_enter_wait_next_edge();
             }
         } break;
 
@@ -2048,15 +2189,14 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     g_status.gyro_z_motion_trim_radps = g_runtime.motion_yaw_trim_dps * CHASSIS_DEG_TO_RAD;
     g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
     g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+    chassis_drone_publish_follow_status();
     g_status.enabled = (g_runtime.startup_lock_done != 0U) &&
                        (((g_status.mode == CHASSIS_MODE_MANUAL) && g_status.remote_fresh) ||
-                       ((g_status.mode == CHASSIS_MODE_WHEEL_TUNE) && command_active) ||
+                        ((g_status.mode == CHASSIS_MODE_WHEEL_TUNE) && command_active) ||
                          (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ||
-                         ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
-                          g_status.drone_fresh &&
-                          (g_status.drone_move_valid ||
-                           (chassis_control_drone_lost_hold_ready() != 0U))) ||
-                        ((g_status.mode == CHASSIS_MODE_SAFE_STOP) &&
+                          ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
+                           command_active) ||
+                         ((g_status.mode == CHASSIS_MODE_SAFE_STOP) &&
                          g_runtime.yaw_lock_valid &&
                          command_active));
 
