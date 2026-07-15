@@ -1083,9 +1083,14 @@ static void chassis_drone_track_compute_command(float err_x_px,
     {
         if(dist_px >= HW_DRONE_NEAR_EXIT_PX)
         {
-            g_runtime.drone_error_filter_valid = 0U;
-            chassis_drone_edge_track_command(err_x_px, err_y_px, dist_px,
-                                             vx_body_cmd, vy_body_cmd);
+            /* 当前近灯已经进入压灯锁存后，远处第二盏灯不得抢占方向。
+             * 将它视为当前近灯不可见，沿原方向完成有界压灯延续。 */
+            (void)chassis_drone_near_press_command(0U,
+                                                   0.0f,
+                                                   0.0f,
+                                                   0.0f,
+                                                   vx_body_cmd,
+                                                   vy_body_cmd);
         }
         else
         {

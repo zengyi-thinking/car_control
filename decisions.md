@@ -15,3 +15,10 @@
 - 删除 `C5 cmd/measured velocity` 帧、状态标志、发送序号、发送 API 和 `app_car` 周期发送调用，小车不再把命令速度或编码器速度反馈给无人机。
 - A4 18 字节接收格式、UART 配置、四状态信标跟随、近灯压灭、轮速 PID、手动控制和安全停车保持不变。
 - 与飞控最简串级追踪环配套使用，飞控和小车必须同时重新烧录；小车双核构建为 `0 errors / 0 warnings`。
+
+## 2026-07-15 Timed Landing Stop And Press Lock
+
+- Reuse A4 flag bit 5 for the flight controller's 70-second `MISSION_STOP`; keep the frame at 18 bytes. The stop is latched until reboot so a later stale or ordinary tracking frame cannot restart the chassis.
+- Wheel tuning and fresh manual joystick override remain available. When manual input is released, the mission stop latch regains control and returns the chassis to `SAFE_STOP`.
+- Once `NEAR_PRESS` starts, a different candidate at `>=12px` is treated as loss of the current near lamp. The car continues only the existing bounded press direction/timer, then enters `WAIT_NEXT_EDGE` before accepting a new target.
+- Entering `SAFE_STOP` uses the existing mode-transition reset to clear continuation, press, direction history, command ramps and PID output. No new uplink acknowledgement or protocol is introduced.

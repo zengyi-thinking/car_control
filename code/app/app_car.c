@@ -26,6 +26,7 @@ typedef struct
      * 5ms 控制周期下, 默认 3 帧退出迟滞 = 15ms 抗抖动窗口. */
     uint8 drone_track_enter_pending;
     uint8 drone_track_exit_pending;
+    uint8 mission_stop_latched;
 } app_car_runtime_t;
 
 /* 阶段1: DRONE_TRACK 退出迟滞. 连续 N 帧信标无效才真正退出, 抗信标抖动/短暂丢失.
@@ -89,6 +90,14 @@ static void app_update_mode(void)
     if (remote_override)
     {
         g_app_runtime.mode = CHASSIS_MODE_MANUAL;
+        g_app_runtime.drone_track_enter_pending = 0U;
+        g_app_runtime.drone_track_exit_pending = 0U;
+        return;
+    }
+
+    if(g_app_runtime.mission_stop_latched != 0U)
+    {
+        g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
         g_app_runtime.drone_track_enter_pending = 0U;
         g_app_runtime.drone_track_exit_pending = 0U;
         return;
@@ -185,6 +194,10 @@ void app_car_step(void)
     {
         g_app_runtime.has_drone = 1U;
         g_app_runtime.drone_age_ms = 0U;
+        if((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MISSION_STOP) != 0U)
+        {
+            g_app_runtime.mission_stop_latched = 1U;
+        }
     }
     else if (g_app_runtime.drone_age_ms < 0xFFFFU)
     {

@@ -6,6 +6,8 @@
 
 ## Confirmed Behavior
 
+- 定时降落版本使用现有 18 字节 A4 的 bit5 作为 `MISSION_STOP`。飞控 70 秒到时后持续发送该标志；小车收到后当个 5ms 周期进入 `SAFE_STOP` 并锁存到重新上电，清空边缘续航、近灯压灯、历史方向和速度斜坡。遥控手动接管仍可用，松杆后重新回到任务停车。
+- 已进入 `PRESS` 后，即使 A4 出现 `>=12px` 的另一盏远灯，也不会切换方向，而是沿锁存方向完成原有最多 `250ms` 的丢灯压灯延续；结束进入 `WAIT` 后才允许下一盏远灯接管。
 - 小车到无人机的 C5 命令速度/编码器速度回传已彻底删除；A4 接收、`EDGE/HOLD/PRESS/WAIT`、里程计和轮速控制均保持原样。飞控和小车双核构建均为 `0 errors / 0 warnings`，本版需要两端同时重新烧录。
 - 信标跟随状态为 `EDGE / HOLD / PRESS / WAIT`。
 - 边缘信标最后一帧后最多续航 `4000ms`，速度基准为追踪速度的 `60%`，最后 `350ms` 在总窗口内衰减至零。
@@ -18,11 +20,12 @@
 
 ## Interfaces
 
-- A4/C5 帧格式未修改。
+- A4 长度和字段位置不变，flags 新增 bit5 `MISSION_STOP`；C5 不变。
 - `chassis_status_t` 增加跟随状态、剩余时间和历史方向有效标志，仅供小车本地诊断与 LCD 显示。
 - 保留 `chassis_control_drone_lost_hold_ready()` 兼容入口，新代码使用 `chassis_control_drone_follow_ready()`。
 
 ## Verification
 
+- 2026-07-15: `codex/timed-auto-land` 双核构建通过，CM7_0/CM7_1 均为 `0 errors / 0 warnings`；A4 定时停车需与同名飞控分支配套烧录。
 - 2026-07-13: `iar/build_all_cores.bat --no-pause` 双核构建通过，CM7_0/CM7_1 均为 `0 errors / 0 warnings`。
 - 待实车验证边缘丢灯、A4 整帧丢失、近灯压灭以及手动接管路径。
