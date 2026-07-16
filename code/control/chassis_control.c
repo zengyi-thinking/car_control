@@ -2105,21 +2105,14 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             g_status.tune_selected_value = 0.0f;
             g_status.tune_selected_step = 0.0f;
 
-            /* Yaw hold stays active even in SAFE_STOP so the car auto-returns
-             * to its locked heading when disturbed (e.g. hand-rotated). This is
-             * required for accurate drone-remote movement: the heading lock
-             * must persist from power-on, in motion and at rest. Only rotation
-             * correction is allowed here; translation stays zero so the car
-             * never drifts without an explicit command. */
-            if (g_runtime.yaw_lock_valid)
-            {
-                vx_body_cmd = 0.0f;
-                vy_body_cmd = 0.0f;
-                omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
-                command_active = 1U;
-                g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
-                g_status.heading_valid = 1U;
-            }
+            /* SAFE_STOP is a hard stop. Preserve the heading target for the
+             * next active mode, but never energize the wheels here. */
+            vx_body_cmd = 0.0f;
+            vy_body_cmd = 0.0f;
+            omega_cmd = 0.0f;
+            command_active = 0U;
+            g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+            g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
         } break;
     }
 
@@ -2199,11 +2192,8 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                        (((g_status.mode == CHASSIS_MODE_MANUAL) && g_status.remote_fresh) ||
                         ((g_status.mode == CHASSIS_MODE_WHEEL_TUNE) && command_active) ||
                          (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ||
-                          ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
-                           command_active) ||
-                         ((g_status.mode == CHASSIS_MODE_SAFE_STOP) &&
-                         g_runtime.yaw_lock_valid &&
-                         command_active));
+                         ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&
+                          command_active));
 
     hw_imu_set_stationary_hint(chassis_stationary_hint_from_status());
 }

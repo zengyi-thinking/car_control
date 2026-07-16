@@ -22,3 +22,8 @@
 - Wheel tuning and fresh manual joystick override remain available. When manual input is released, the mission stop latch regains control and returns the chassis to `SAFE_STOP`.
 - Once `NEAR_PRESS` starts, a different candidate at `>=12px` is treated as loss of the current near lamp. The car continues only the existing bounded press direction/timer, then enters `WAIT_NEXT_EDGE` before accepting a new target.
 - Entering `SAFE_STOP` uses the existing mode-transition reset to clear continuation, press, direction history, command ramps and PID output. No new uplink acknowledgement or protocol is introduced.
+
+## 2026-07-16 Mission Stop Means Zero Wheel Output
+
+- `SAFE_STOP` no longer runs yaw-hold correction. It preserves the heading target internally but commands zero translation, zero rotation and disables all four wheel outputs.
+- Explicit manual override and wheel tuning keep their existing higher priority; releasing either returns the latched mission stop to a hard zero-output state.
