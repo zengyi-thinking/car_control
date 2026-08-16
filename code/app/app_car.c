@@ -11,11 +11,10 @@
 
 #include <string.h>
 
-extern volatile uint8 g_chassis_wheel_pid_tune_enabled;
-
 typedef struct
 {
     proto_remote_data_t remote;
+    proto_remote_diag_t remote_diag;
     proto_drone_data_t drone;
     uint8 has_remote;
     uint8 has_drone;
@@ -56,44 +55,12 @@ static uint8 app_drone_follow_valid(void)
     return chassis_control_drone_follow_ready();
 }
 
-static uint16 app_abs_i16(int16 value)
-{
-    return (value < 0) ? (uint16)(-value) : (uint16)value;
-}
-
-static uint8 app_remote_manual_override(void)
-{
-    if(!app_remote_fresh())
-    {
-        return 0U;
-    }
-
-    return ((app_abs_i16(g_app_runtime.remote.joystick[0]) >= (uint16)HW_DRONE_REMOTE_OVERRIDE_RAW) ||
-            (app_abs_i16(g_app_runtime.remote.joystick[1]) >= (uint16)HW_DRONE_REMOTE_OVERRIDE_RAW)) ? 1U : 0U;
-}
-
 static void app_update_mode(void)
 {
-    const uint8 remote_override = app_remote_manual_override();
+    const uint8 remote_fresh = app_remote_fresh();
     const uint8 drone_move_valid = app_drone_move_valid();
     const uint8 drone_follow_valid = app_drone_follow_valid();
     const uint8 drone_track_valid = ((drone_move_valid != 0U) || (drone_follow_valid != 0U)) ? 1U : 0U;
-
-    if (g_chassis_wheel_pid_tune_enabled)
-    {
-        g_app_runtime.mode = CHASSIS_MODE_WHEEL_TUNE;
-        g_app_runtime.drone_track_enter_pending = 0U;
-        g_app_runtime.drone_track_exit_pending = 0U;
-        return;
-    }
-
-    if (remote_override)
-    {
-        g_app_runtime.mode = CHASSIS_MODE_MANUAL;
-        g_app_runtime.drone_track_enter_pending = 0U;
-        g_app_runtime.drone_track_exit_pending = 0U;
-        return;
-    }
 
     if(g_app_runtime.mission_stop_latched != 0U)
     {
@@ -132,8 +99,8 @@ static void app_update_mode(void)
             g_app_runtime.drone_track_enter_pending = 0U;
             if (g_app_runtime.drone_track_exit_pending >= APP_DRONE_TRACK_EXIT_HOLD_FRAMES)
             {
-                /* 连续 N 帧无效, 才真正退出 */
-                g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
+                /* 连续 N 帧无效后，下一优先级才允许遥控接管。 */
+                g_app_runtime.mode = (remote_fresh != 0U) ? CHASSIS_MODE_MANUAL : CHASSIS_MODE_HEADING_HOLD;
                 g_app_runtime.drone_track_exit_pending = 0U;
             }
             /* 否则保持 DRONE_TRACK: 让续航状态机有时间响应,
@@ -141,8 +108,8 @@ static void app_update_mode(void)
         }
         else
         {
-            /* 既不在 DRONE_TRACK, 本帧又无效: SAFE_STOP */
-            g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
+            /* 最初遥控语义：收到新鲜A3帧即进入MANUAL，无需额外摇杆门限。 */
+            g_app_runtime.mode = (remote_fresh != 0U) ? CHASSIS_MODE_MANUAL : CHASSIS_MODE_HEADING_HOLD;
             g_app_runtime.drone_track_enter_pending = 0U;
             g_app_runtime.drone_track_exit_pending = 0U;
         }
@@ -203,11 +170,18 @@ void app_car_step(void)
     {
         g_app_runtime.drone_age_ms = (uint16)(g_app_runtime.drone_age_ms + HW_CONTROL_PERIOD_MS);
     }
+    proto_remote_get_diag(&g_app_runtime.remote_diag);
+
+    /* 任务停车只由无人机 A4 的 MISSION_STOP 标志触发(降落停桨后小车锁存停车),
+     * 不再有本地上电计时自动停车。 */
 
     app_update_mode();
 
     chassis_control_set_mode(g_app_runtime.mode);
-    chassis_control_set_remote(&g_app_runtime.remote, app_remote_fresh(), g_app_runtime.remote_age_ms);
+    chassis_control_set_remote(&g_app_runtime.remote,
+                               app_remote_fresh(),
+                               g_app_runtime.remote_age_ms,
+                               &g_app_runtime.remote_diag);
     chassis_control_set_drone(&g_app_runtime.drone, app_drone_fresh(), g_app_runtime.drone_age_ms);
     chassis_control_step(enc_counts, HW_CONTROL_PERIOD_S, &attitude);
 

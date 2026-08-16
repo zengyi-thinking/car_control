@@ -1,5 +1,25 @@
 # Car Control Decisions
 
+## 2026-08-12 Restore Direct Remote Control And Drone Priority
+
+- Restore the original remote-mode entry rule: any fresh, checksum-valid A3 frame selects direct manual control when no higher-priority drone action is active. Remove the later raw-axis override threshold.
+- Use only two external motion sources. Valid A4 tracking and its bounded continuation outrank A3 remote control; mission/local timed stop outranks both. Idle heading hold is not an external motion source.
+- Use only the left stick for motion: axis 0 commands lateral speed and axis 1 commands forward speed. Axes 2/3 are ignored and heading always holds the startup direction.
+- Keep the legacy position-edit implementation isolated from every normal mode so it cannot become a third motion source or reinterpret the right stick. Keep the 18-byte A3 layout for transmitter compatibility.
+- Add receive diagnostics to the LCD so no bytes, invalid frames, stale frames and fresh frames can be distinguished without a debugger.
+
+## 2026-08-12 Restore Idle Heading Hold And Slow Beacon Tracking
+
+- Add a distinct `HEADING_HOLD` mode for ordinary idle operation. It commands zero translation and uses the existing IMU heading controller to restore the startup heading.
+- Keep mission stop semantics unchanged: local 60-second stop and A4 `MISSION_STOP` still select hard-zero `SAFE_STOP`, so landing cannot cause the car to rotate.
+- Reduce automatic beacon tracking to `1.00m/s` far speed, `0.45m/s` near speed, `0.50m/s` press speed, `0.90` lateral scale and `1.2m/s2` vector acceleration. Begin interpolation at `60px` and leave wheel PID and manual speed unchanged.
+
+## 2026-07-17 Restore Local 60-Second Stop
+
+- Count elapsed time from local car-control startup using the existing `5ms` control period.
+- At `60000ms`, set the existing mission-stop latch and reuse the hard-zero `SAFE_STOP` path; no new protocol or control state is added.
+- Keep wheel tuning and fresh manual override above the latched stop, matching the existing A4 mission-stop behavior.
+
 ## 2026-07-13 Beacon Continuation And Near Press
 
 - 用四状态跟随流程替代分散的中心短冲、丢灯保持和附加衰减计时。
@@ -27,3 +47,4 @@
 
 - `SAFE_STOP` no longer runs yaw-hold correction. It preserves the heading target internally but commands zero translation, zero rotation and disables all four wheel outputs.
 - Explicit manual override and wheel tuning keep their existing higher priority; releasing either returns the latched mission stop to a hard zero-output state.
+- 2026-08-12：运行时运动来源收口为无人机A4和LoRa遥控A3。安全停车优先，其次是有效A4追踪及有界续航，再其次是新鲜A3遥控；左摇杆同时控制前后和左右，右摇杆与旧位移提交链路不再参与运动仲裁。普通待机使用 `HEADING_HOLD` 回到上电锁定方向。

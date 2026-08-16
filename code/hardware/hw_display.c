@@ -33,6 +33,7 @@ static const char *hw_display_mode_name(chassis_mode_t mode)
     {
         case CHASSIS_MODE_SAFE_STOP: return "STOP";
         case CHASSIS_MODE_MANUAL: return "MAN";
+        case CHASSIS_MODE_HEADING_HOLD: return "HEAD";
         case CHASSIS_MODE_WHEEL_TUNE: return "TUNE";
         case CHASSIS_MODE_DRONE_TRACK: return "DRON";
         default: return "UNK";
@@ -309,6 +310,7 @@ void hw_display_update(const chassis_status_t *status)
                          ((status->drone_flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U)) ? 1U : 0U;
     const uint8 has_b = ((status != 0) && (status->drone_fresh != 0U) &&
                          ((status->drone_flags & PROTO_DRONE_FLAG_HAS_BEACON) != 0U)) ? 1U : 0U;
+    char remote_state;
 
     if (!g_display_ready || (status == 0))
     {
@@ -328,9 +330,27 @@ void hw_display_update(const chassis_status_t *status)
 
     memset(lines, 0, sizeof(lines));
 
-    hw_display_make_line(lines[0], "%s tg%+6.1f e%+4.1f",
+    if(status->remote_fresh != 0U)
+    {
+        remote_state = 'Y';
+    }
+    else if(status->remote_valid_frame_count != 0U)
+    {
+        remote_state = 'S';
+    }
+    else if(status->remote_rx_byte_count != 0U)
+    {
+        remote_state = 'B';
+    }
+    else
+    {
+        remote_state = 'N';
+    }
+
+    hw_display_make_line(lines[0], "%s R:%c D:%u e%+4.1f",
                          hw_display_mode_name(status->mode),
-                         status->target_yaw_deg,
+                         remote_state,
+                         (unsigned int)status->drone_move_valid,
                          status->yaw_error_deg);
 
     if(has_b != 0U)
@@ -369,10 +389,19 @@ void hw_display_update(const chassis_status_t *status)
         hw_display_make_line(lines[3], "VBX ---- VBY ---- Y--");
     }
 
-    hw_display_make_line(lines[4], "S %-5s T%04u D%u",
-                         hw_display_follow_name(status->drone_follow_state),
-                         (unsigned int)status->drone_follow_remaining_ms,
-                         (unsigned int)status->drone_hold_dir_valid);
+    if(status->mode == CHASSIS_MODE_MANUAL)
+    {
+        hw_display_make_line(lines[4], "JOY X%+4d Y%+4d",
+                             (int)(status->joy_x_norm * 100.0f),
+                             (int)(status->joy_y_norm * 100.0f));
+    }
+    else
+    {
+        hw_display_make_line(lines[4], "S %-5s T%04u D%u",
+                             hw_display_follow_name(status->drone_follow_state),
+                             (unsigned int)status->drone_follow_remaining_ms,
+                             (unsigned int)status->drone_hold_dir_valid);
+    }
 
     for (i = 0U; i < DISPLAY_USED_LINE_COUNT; ++i)
     {

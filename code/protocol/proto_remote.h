@@ -18,8 +18,16 @@ typedef struct
     uint8 fresh;
 } proto_remote_data_t;
 
+typedef struct
+{
+    uint32 rx_byte_count;
+    uint32 valid_frame_count;
+    uint32 checksum_error_count;
+} proto_remote_diag_t;
+
 void proto_remote_init(void);
 void proto_remote_on_byte(uint8 byte);
 uint8 proto_remote_update(proto_remote_data_t *out);
+void proto_remote_get_diag(proto_remote_diag_t *out);
 
 #endif

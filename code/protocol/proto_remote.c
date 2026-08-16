@@ -26,7 +26,10 @@ typedef struct
 static uint8 g_rx_buf[REMOTE_FRAME_SIZE];
 static uint8 g_rx_idx = 0U;
 static proto_remote_data_t g_latest_remote;
-static uint8 g_remote_pending = 0U;
+static volatile uint8 g_remote_pending = 0U;
+static volatile uint32 g_rx_byte_count = 0U;
+static volatile uint32 g_valid_frame_count = 0U;
+static volatile uint32 g_checksum_error_count = 0U;
 
 static uint8 proto_remote_calc_sum(const uint8 *buf, uint8 len)
 {
@@ -65,6 +68,7 @@ static uint8 proto_remote_try_parse(proto_remote_data_t *out)
     sum = proto_remote_calc_sum((const uint8 *)&frame, (uint8)sizeof(frame));
     if (sum != g_rx_buf[1])
     {
+        g_checksum_error_count++;
         proto_remote_reset();
         return 0U;
     }
@@ -85,10 +89,15 @@ void proto_remote_init(void)
     proto_remote_reset();
     memset(&g_latest_remote, 0, sizeof(g_latest_remote));
     g_remote_pending = 0U;
+    g_rx_byte_count = 0U;
+    g_valid_frame_count = 0U;
+    g_checksum_error_count = 0U;
 }
 
 void proto_remote_on_byte(uint8 byte)
 {
+    g_rx_byte_count++;
+
     if (g_rx_idx == 0U)
     {
         if (byte != REMOTE_FRAME_HEAD)
@@ -114,6 +123,7 @@ void proto_remote_on_byte(uint8 byte)
     {
         if (proto_remote_try_parse(&g_latest_remote))
         {
+            g_valid_frame_count++;
             g_remote_pending = 1U;
         }
     }
@@ -129,4 +139,16 @@ uint8 proto_remote_update(proto_remote_data_t *out)
     *out = g_latest_remote;
     g_remote_pending = 0U;
     return 1U;
+}
+
+void proto_remote_get_diag(proto_remote_diag_t *out)
+{
+    if (out == 0)
+    {
+        return;
+    }
+
+    out->rx_byte_count = g_rx_byte_count;
+    out->valid_frame_count = g_valid_frame_count;
+    out->checksum_error_count = g_checksum_error_count;
 }

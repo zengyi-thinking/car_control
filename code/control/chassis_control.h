@@ -11,6 +11,7 @@ typedef enum
 {
     CHASSIS_MODE_SAFE_STOP = 0,
     CHASSIS_MODE_MANUAL = 1,
+    CHASSIS_MODE_HEADING_HOLD = 2,
     CHASSIS_MODE_WHEEL_TUNE = 3,
     CHASSIS_MODE_DRONE_TRACK = 4,
 } chassis_mode_t;
@@ -87,6 +88,9 @@ typedef struct
 
     uint16 remote_age_ms;
     uint16 drone_age_ms;
+    uint32 remote_rx_byte_count;
+    uint32 remote_valid_frame_count;
+    uint32 remote_checksum_error_count;
     uint8 remote_fresh;
     uint8 drone_fresh;
     uint8 drone_move_valid;
@@ -126,7 +130,10 @@ extern pid_t g_wheel_pid[4];
 void chassis_control_init(void);
 void chassis_control_reset(void);
 void chassis_control_set_mode(chassis_mode_t mode);
-void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, uint16 age_ms);
+void chassis_control_set_remote(const proto_remote_data_t *remote,
+                                uint8 fresh,
+                                uint16 age_ms,
+                                const proto_remote_diag_t *diag);
 void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms);
 uint8 chassis_control_drone_follow_ready(void);
 uint8 chassis_control_drone_lost_hold_ready(void);

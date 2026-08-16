@@ -4,7 +4,8 @@
  * 控制模式:
  * 1. SAFE_STOP: 电机停转
  * 2. MANUAL: LoRa 遥控摇杆直控 + IMU 锁头
- * 3. DRONE_TRACK: 0xA4 无人机 V/B 像素坐标 + 车体系速度控制 + IMU 锁头
+ * 3. HEADING_HOLD: 普通待机零平移 + IMU 航向回正
+ * 4. DRONE_TRACK: 0xA4 无人机 V/B 像素坐标 + 车体系速度控制 + IMU 锁头
  ******************************************************************************/
 
 #include "control/chassis_control.h"
@@ -1294,9 +1295,8 @@ static void chassis_apply_body_command_slew(float *vx_body_cmd, float *vy_body_c
     chassis_apply_body_command_slew_limit(vx_body_cmd, vy_body_cmd, dt_s, HW_MAX_LINEAR_ACCEL_MPS2);
 }
 
-/* Right-stick position-edit workflow. In DRONE_TRACK mode this function is
- * skipped entirely (see the mode gate above), so the right stick is retired
- * from automatic control. Kept for MANUAL mode parity and future use. */
+/* Legacy position workflow is kept only for source compatibility. Every
+ * selectable runtime mode returns before reading the right-stick fields. */
 static void chassis_position_move_update(const proto_remote_data_t *remote, float yaw_deg, float dt_s)
 {
     float right_x;
@@ -1310,7 +1310,10 @@ static void chassis_position_move_update(const proto_remote_data_t *remote, floa
         return;
     }
 
-    if ((g_status.mode == CHASSIS_MODE_SAFE_STOP) || (g_status.mode == CHASSIS_MODE_WHEEL_TUNE))
+    if ((g_status.mode == CHASSIS_MODE_SAFE_STOP) ||
+        (g_status.mode == CHASSIS_MODE_MANUAL) ||
+        (g_status.mode == CHASSIS_MODE_HEADING_HOLD) ||
+        (g_status.mode == CHASSIS_MODE_WHEEL_TUNE))
     {
         g_runtime.position_press_armed = 0U;
         if (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN)
@@ -1646,7 +1649,10 @@ void chassis_control_set_mode(chassis_mode_t mode)
     g_status.mode = mode;
 }
 
-void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, uint16 age_ms)
+void chassis_control_set_remote(const proto_remote_data_t *remote,
+                                uint8 fresh,
+                                uint16 age_ms,
+                                const proto_remote_diag_t *diag)
 {
     if (remote != 0)
     {
@@ -1655,6 +1661,12 @@ void chassis_control_set_remote(const proto_remote_data_t *remote, uint8 fresh, 
 
     g_status.remote_fresh = fresh ? 1U : 0U;
     g_status.remote_age_ms = age_ms;
+    if (diag != 0)
+    {
+        g_status.remote_rx_byte_count = diag->rx_byte_count;
+        g_status.remote_valid_frame_count = diag->valid_frame_count;
+        g_status.remote_checksum_error_count = diag->checksum_error_count;
+    }
 }
 
 void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms)
@@ -1737,7 +1749,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     uint8 attitude_valid = 0U;
     float left_x = 0.0f;
     float left_y = 0.0f;
-    uint8 manual_override = 0U;
 
     if ((enc_counts == 0) || (dt_s <= 0.0f))
     {
@@ -1835,6 +1846,11 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             chassis_reset_command_states();
             chassis_reset_pid_and_output();
         }
+        else if (g_status.mode == CHASSIS_MODE_HEADING_HOLD)
+        {
+            chassis_reset_command_states();
+            chassis_reset_pid_and_output();
+        }
         else if (g_status.mode == CHASSIS_MODE_WHEEL_TUNE)
         {
             chassis_tune_reset_latch();
@@ -1890,15 +1906,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         left_x = chassis_normalize_remote_axis(g_runtime.remote.joystick[0]);
         left_y = chassis_normalize_remote_axis(g_runtime.remote.joystick[1]);
         chassis_manual_snap_axes(&left_x, &left_y);
-        manual_override = (uint8)((fabsf(left_x) > CHASSIS_POSITION_EDIT_AXIS_ON) ||
-                                  (fabsf(left_y) > CHASSIS_POSITION_EDIT_AXIS_ON));
-    }
-
-    if ((g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) && manual_override)
-    {
-        chassis_position_move_abort();
-        g_runtime.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
-        g_status.position_move_state = CHASSIS_POSITION_MOVE_IDLE;
     }
 
     g_status.joy_x_norm = 0.0f;
@@ -2001,13 +2008,6 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 float joy_x = left_x;
                 float joy_y = left_y;
 
-                if (!manual_override)
-                {
-                    joy_x = chassis_normalize_remote_axis(g_runtime.remote.joystick[0]);
-                    joy_y = chassis_normalize_remote_axis(g_runtime.remote.joystick[1]);
-                    chassis_manual_snap_axes(&joy_x, &joy_y);
-                }
-
                 g_status.joy_x_norm = joy_x;
                 g_status.joy_y_norm = joy_y;
                 g_status.user_cmd_x_mps = joy_x * HW_MANUAL_MAX_LATERAL_SPEED_MPS;
@@ -2020,6 +2020,16 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
                 g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
             }
+        } break;
+
+        case CHASSIS_MODE_HEADING_HOLD:
+        {
+            vx_body_cmd = 0.0f;
+            vy_body_cmd = 0.0f;
+            omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
+            command_active = (fabsf(omega_cmd) > 0.0001f) ? 1U : 0U;
+            g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
+            g_status.heading_valid = g_runtime.yaw_lock_valid ? 1U : 0U;
         } break;
 
         case CHASSIS_MODE_DRONE_TRACK:
@@ -2190,6 +2200,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
     chassis_drone_publish_follow_status();
     g_status.enabled = (g_runtime.startup_lock_done != 0U) &&
                        (((g_status.mode == CHASSIS_MODE_MANUAL) && g_status.remote_fresh) ||
+                        ((g_status.mode == CHASSIS_MODE_HEADING_HOLD) && command_active) ||
                         ((g_status.mode == CHASSIS_MODE_WHEEL_TUNE) && command_active) ||
                          (g_runtime.position_move_state == CHASSIS_POSITION_MOVE_RUN) ||
                          ((g_status.mode == CHASSIS_MODE_DRONE_TRACK) &&

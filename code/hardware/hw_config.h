@@ -31,21 +31,21 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-/* 自动追灯基准小幅提速，前后保持保守，侧向补偿麦轮横移效率。 */
+/* 自动追灯采用保守速度，前后与横向均优先保证平稳接近。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.20f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.58f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.50f
 /* 信标追踪采用外圈快追、近圈降速、中心持续压灯。 */
-#define HW_DRONE_TRACK_SPEED_MPS              1.25f
-#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.58f
-#define HW_DRONE_TRACK_NEAR_PX                50.0f
+#define HW_DRONE_TRACK_SPEED_MPS              1.00f
+#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.45f
+#define HW_DRONE_TRACK_NEAR_PX                60.0f
 #define HW_DRONE_TRACK_FWD_SCALE              0.68f
-#define HW_DRONE_TRACK_RIGHT_SCALE            1.08f
+#define HW_DRONE_TRACK_RIGHT_SCALE            0.90f
 /* 自动追灯使用独立矢量加速度上限，避免有线无人机被突然拉拽。 */
-#define HW_DRONE_TRACK_ACCEL_MPS2             2.0f
+#define HW_DRONE_TRACK_ACCEL_MPS2             1.2f
 #define HW_DRONE_NEAR_ENTER_PX                8.0f
 #define HW_DRONE_NEAR_EXIT_PX                 12.0f
-#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.64f
+#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.50f
 #define HW_DRONE_NEAR_PRESS_DIR_ALPHA         0.40f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_PX        2.5f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_DOT       0.15f
@@ -64,7 +64,6 @@
 #define HW_DRONE_RIGHT_SIGN                   (1.0f)
 #define HW_DRONE_YAW_COMP_ENABLE             1U
 #define HW_DRONE_YAW_COMP_SIGN               (1.0f)
-#define HW_DRONE_REMOTE_OVERRIDE_RAW          260
 
 #define HW_WHEEL_TUNE_TARGET_MPS              0.12f
 #define HW_WHEEL_TUNE_KP_STEP                 10.0f
