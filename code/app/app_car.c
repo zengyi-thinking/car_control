@@ -140,6 +140,7 @@ void app_car_step(void)
     int16 motor_duty[4] = {0};
     flight_attitude_t attitude;
     const chassis_status_t *status;
+    uint8 drone_frame_new = 0U;
 
     memset(&attitude, 0, sizeof(attitude));
 
@@ -161,6 +162,7 @@ void app_car_step(void)
     {
         g_app_runtime.has_drone = 1U;
         g_app_runtime.drone_age_ms = 0U;
+        drone_frame_new = 1U;
         if((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MISSION_STOP) != 0U)
         {
             g_app_runtime.mission_stop_latched = 1U;
@@ -186,6 +188,15 @@ void app_car_step(void)
     chassis_control_step(enc_counts, HW_CONTROL_PERIOD_S, &attitude);
 
     status = chassis_control_get_status();
+
+    /* 收到新 A4 帧即回传车体实测速度(编码器里程计), 与无人机 20ms
+     * 节拍天然同步, 作为追踪前馈的真实车速来源。 */
+    if((drone_frame_new != 0U) && (status != 0))
+    {
+        proto_drone_send_speed((int16)(status->vel_vx_body_mps * 1000.0f),
+                               (int16)(status->vel_vy_body_mps * 1000.0f));
+    }
+
     if (status->enabled)
     {
         chassis_control_get_motor_duty(motor_duty);
