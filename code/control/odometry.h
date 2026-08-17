@@ -12,8 +12,8 @@ typedef struct
     float delta_x_field_m;
     float delta_y_field_m;
 
-    float vx_body_mps;
-    float vy_body_mps;
+    float vx_body_mps;  /* 历史字段名：物理含义为前向速度，小车 +Y。 */
+    float vy_body_mps;  /* 历史字段名：物理含义为右向速度，小车 +X。 */
     float omega_radps;
     float vx_field_mps;
     float vy_field_mps;

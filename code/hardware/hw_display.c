@@ -10,8 +10,9 @@
 #define DISPLAY_LINE_H               8U
 #define DISPLAY_TEXT_COLS            21U
 #define DISPLAY_LINE_BUF_LEN         32U
-#define DISPLAY_REFRESH_TICKS        10U
+#define DISPLAY_REFRESH_TICKS        20U
 #define DISPLAY_USED_LINE_COUNT      5U
+#define DISPLAY_GRAPH_CHUNK_ROWS     8U
 
 #define DISPLAY_CAMERA_W             188U
 #define DISPLAY_CAMERA_H             120U
@@ -20,11 +21,19 @@
 #define DISPLAY_GRAPH_W              124U
 #define DISPLAY_GRAPH_H              114U
 #define DISPLAY_GRAPH_PIXELS         (DISPLAY_GRAPH_W * DISPLAY_GRAPH_H)
+#define DISPLAY_GRAPH_CENTER_X       ((int16)(DISPLAY_GRAPH_W / 2U))
+#define DISPLAY_GRAPH_CENTER_Y       ((int16)(DISPLAY_GRAPH_H / 2U))
+#define DISPLAY_GRAPH_VECTOR_MARGIN  8
 
 static uint8 g_display_ready = 0U;
 static uint8 g_display_tick = 0U;
 static uint8 g_layout_drawn = 0U;
+static uint8 g_refresh_active = 0U;
+static uint8 g_text_scan_line = 0U;
+static uint8 g_graph_send_row = DISPLAY_GRAPH_H;
+static uint8 g_axis_label_phase = 2U;
 static char g_last_lines[DISPLAY_USED_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
+static char g_pending_lines[DISPLAY_USED_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
 static uint16 g_graph[DISPLAY_GRAPH_PIXELS];
 
 static const char *hw_display_mode_name(chassis_mode_t mode)
@@ -173,17 +182,28 @@ static void hw_display_graph_cross(int16 x, int16 y, int16 half, uint16 color)
     hw_display_graph_line(x, (int16)(y - half), x, (int16)(y + half), color);
 }
 
-static int16 hw_display_map_x(int16 camera_x)
+static int16 hw_display_map_right_x(int16 right_x_px)
 {
-    int32 x = hw_display_clamp_i16(camera_x, 0, (int16)(DISPLAY_CAMERA_W - 1U));
-    x = (x * (int32)(DISPLAY_GRAPH_W - 1U)) / (int32)(DISPLAY_CAMERA_W - 1U);
+    const int32 half_span = (int32)DISPLAY_GRAPH_CENTER_X - DISPLAY_GRAPH_VECTOR_MARGIN;
+    int32 x = hw_display_clamp_i16(right_x_px,
+                                   (int16)(-(int16)(DISPLAY_CAMERA_W - 1U)),
+                                   (int16)(DISPLAY_CAMERA_W - 1U));
+
+    x = (int32)DISPLAY_GRAPH_CENTER_X
+      + ((x * half_span) / (int32)(DISPLAY_CAMERA_W - 1U));
     return (int16)x;
 }
 
-static int16 hw_display_map_y(int16 camera_y)
+static int16 hw_display_map_forward_y(int16 forward_y_px)
 {
-    int32 y = hw_display_clamp_i16(camera_y, 0, (int16)(DISPLAY_CAMERA_H - 1U));
-    y = (y * (int32)(DISPLAY_GRAPH_H - 1U)) / (int32)(DISPLAY_CAMERA_H - 1U);
+    const int32 half_span = (int32)DISPLAY_GRAPH_CENTER_Y - DISPLAY_GRAPH_VECTOR_MARGIN;
+    int32 y = hw_display_clamp_i16(forward_y_px,
+                                   (int16)(-(int16)(DISPLAY_CAMERA_H - 1U)),
+                                   (int16)(DISPLAY_CAMERA_H - 1U));
+
+    /* 屏幕行号向下增大，所以物理前方(+Y)必须映射到更小的屏幕行号。 */
+    y = (int32)DISPLAY_GRAPH_CENTER_Y
+      - ((y * half_span) / (int32)(DISPLAY_CAMERA_H - 1U));
     return (int16)y;
 }
 
@@ -201,8 +221,8 @@ static void hw_display_graph_border(void)
     const int16 y0 = 0;
     const int16 x1 = (int16)(DISPLAY_GRAPH_W - 1U);
     const int16 y1 = (int16)(DISPLAY_GRAPH_H - 1U);
-    const int16 cx = hw_display_map_x((int16)(DISPLAY_CAMERA_W / 2U));
-    const int16 cy = hw_display_map_y((int16)(DISPLAY_CAMERA_H / 2U));
+    const int16 cx = DISPLAY_GRAPH_CENTER_X;
+    const int16 cy = DISPLAY_GRAPH_CENTER_Y;
 
     hw_display_graph_line(x0, y0, x1, y0, RGB565_GRAY);
     hw_display_graph_line(x0, y1, x1, y1, RGB565_GRAY);
@@ -220,11 +240,8 @@ static void hw_display_graph_border(void)
     hw_display_graph_cross(cx, cy, 3, RGB565_WHITE);
 }
 
-static void hw_display_graph_target(int16 x, int16 y, uint16 color)
+static void hw_display_graph_target(int16 gx, int16 gy, uint16 color)
 {
-    const int16 gx = hw_display_map_x(x);
-    const int16 gy = hw_display_map_y(y);
-
     hw_display_graph_cross(gx, gy, 4, color);
     hw_display_graph_put((int16)(gx - 1), (int16)(gy - 1), color);
     hw_display_graph_put((int16)(gx + 1), (int16)(gy - 1), color);
@@ -232,50 +249,77 @@ static void hw_display_graph_target(int16 x, int16 y, uint16 color)
     hw_display_graph_put((int16)(gx + 1), (int16)(gy + 1), color);
 }
 
-static void hw_display_draw_graph(const chassis_status_t *status)
+static void hw_display_compose_graph(const chassis_status_t *status)
 {
     const uint8 has_v = ((status->drone_fresh != 0U) &&
                          ((status->drone_flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U)) ? 1U : 0U;
     const uint8 has_b = ((status->drone_fresh != 0U) &&
                          ((status->drone_flags & PROTO_DRONE_FLAG_HAS_BEACON) != 0U)) ? 1U : 0U;
+    const uint8 vector_valid = ((has_v != 0U) && (has_b != 0U)
+                               && (status->drone_move_valid != 0U)) ? 1U : 0U;
+    const int16 origin_x = DISPLAY_GRAPH_CENTER_X;
+    const int16 origin_y = DISPLAY_GRAPH_CENTER_Y;
 
     hw_display_graph_clear();
     hw_display_graph_border();
 
-    if((has_v != 0U) && (has_b != 0U))
+    if(vector_valid != 0U)
     {
-        hw_display_graph_line(hw_display_map_x(status->drone_v_x_px),
-                              hw_display_map_y(status->drone_v_y_px),
-                              hw_display_map_x(status->drone_beacon_x_px),
-                              hw_display_map_y(status->drone_beacon_y_px),
-                              RGB565_YELLOW);
-    }
-    if(has_b != 0U)
-    {
-        hw_display_graph_target(status->drone_beacon_x_px, status->drone_beacon_y_px, RGB565_RED);
+        const int16 target_x = hw_display_map_right_x(status->drone_vb_x_px);
+        const int16 target_y = hw_display_map_forward_y(status->drone_vb_y_px);
+
+        hw_display_graph_line(origin_x, origin_y, target_x, target_y, RGB565_YELLOW);
+        hw_display_graph_target(target_x, target_y, RGB565_RED);
     }
     if(has_v != 0U)
     {
-        hw_display_graph_target(status->drone_v_x_px, status->drone_v_y_px, RGB565_GREEN);
+        /* 方向图以V灯为原点；红色端点表示Yaw补偿后的信标方向。 */
+        hw_display_graph_target(origin_x, origin_y, RGB565_GREEN);
+    }
+
+}
+
+static void hw_display_send_graph_chunk(void)
+{
+    uint8 rows;
+
+    if (g_graph_send_row >= DISPLAY_GRAPH_H)
+    {
+        return;
+    }
+
+    rows = DISPLAY_GRAPH_CHUNK_ROWS;
+    if ((uint16)g_graph_send_row + rows > DISPLAY_GRAPH_H)
+    {
+        rows = (uint8)(DISPLAY_GRAPH_H - g_graph_send_row);
     }
 
     tft180_show_rgb565_image(DISPLAY_GRAPH_X,
-                             DISPLAY_GRAPH_Y,
-                             g_graph,
+                             (uint16)(DISPLAY_GRAPH_Y + g_graph_send_row),
+                             &g_graph[(uint32)g_graph_send_row * DISPLAY_GRAPH_W],
                              DISPLAY_GRAPH_W,
-                             DISPLAY_GRAPH_H,
+                             rows,
                              DISPLAY_GRAPH_W,
-                             DISPLAY_GRAPH_H,
+                             rows,
                              0U);
+    g_graph_send_row = (uint8)(g_graph_send_row + rows);
+}
+
+static void hw_display_draw_axis_label(uint8 phase)
+{
     tft180_set_color(RGB565_CYAN, RGB565_BLACK);
-    /* Axis labels: +X stays on the right (original), +Y moved to top to match
-     * the car IMU silk (forward = up in this image). */
-    tft180_show_string((uint16)(DISPLAY_GRAPH_X + DISPLAY_GRAPH_W - 15U),
-                       (uint16)(DISPLAY_GRAPH_Y + hw_display_map_y((int16)(DISPLAY_CAMERA_H / 2U)) - 8U),
-                       "+X");
-    tft180_show_string((uint16)(DISPLAY_GRAPH_X + hw_display_map_x((int16)(DISPLAY_CAMERA_W / 2U)) + 3U),
-                       (uint16)(DISPLAY_GRAPH_Y + 2U),
-                       "+Y");
+    if (phase == 0U)
+    {
+        tft180_show_string((uint16)(DISPLAY_GRAPH_X + DISPLAY_GRAPH_W - 15U),
+                           (uint16)(DISPLAY_GRAPH_Y + DISPLAY_GRAPH_CENTER_Y - 8U),
+                           "+X");
+    }
+    else
+    {
+        tft180_show_string((uint16)(DISPLAY_GRAPH_X + DISPLAY_GRAPH_CENTER_X + 3U),
+                           (uint16)(DISPLAY_GRAPH_Y + 2U),
+                           "+Y");
+    }
 }
 
 static void hw_display_draw_layout(void)
@@ -297,14 +341,17 @@ void hw_display_init(void)
     tft180_set_font(TFT180_6X8_FONT);
     tft180_set_color(RGB565_WHITE, RGB565_BLACK);
     g_display_ready = 1U;
-    g_display_tick = 0U;
+    g_display_tick = DISPLAY_REFRESH_TICKS;
     g_layout_drawn = 0U;
+    g_refresh_active = 0U;
+    g_text_scan_line = 0U;
+    g_graph_send_row = DISPLAY_GRAPH_H;
+    g_axis_label_phase = 2U;
     hw_display_draw_layout();
 }
 
 void hw_display_update(const chassis_status_t *status)
 {
-    char lines[DISPLAY_USED_LINE_COUNT][DISPLAY_LINE_BUF_LEN];
     uint8 i;
     const uint8 has_v = ((status != 0) && (status->drone_fresh != 0U) &&
                          ((status->drone_flags & PROTO_DRONE_FLAG_HAS_VLAMP) != 0U)) ? 1U : 0U;
@@ -322,95 +369,123 @@ void hw_display_update(const chassis_status_t *status)
         hw_display_draw_layout();
     }
 
-    if (++g_display_tick < DISPLAY_REFRESH_TICKS)
+    if (g_display_tick < DISPLAY_REFRESH_TICKS)
+    {
+        g_display_tick++;
+    }
+
+    if ((g_refresh_active == 0U) && (g_display_tick >= DISPLAY_REFRESH_TICKS))
+    {
+        g_display_tick = 0U;
+        memset(g_pending_lines, 0, sizeof(g_pending_lines));
+
+        if(status->remote_fresh != 0U)
+        {
+            remote_state = 'Y';
+        }
+        else if(status->remote_valid_frame_count != 0U)
+        {
+            remote_state = 'S';
+        }
+        else if(status->remote_rx_byte_count != 0U)
+        {
+            remote_state = 'B';
+        }
+        else
+        {
+            remote_state = 'N';
+        }
+
+        hw_display_make_line(g_pending_lines[0], "%s R:%c D:%u e%+4.1f",
+                             hw_display_mode_name(status->mode),
+                             remote_state,
+                             (unsigned int)status->drone_move_valid,
+                             status->yaw_error_deg);
+
+        if(has_b != 0U)
+        {
+            hw_display_make_line(g_pending_lines[1], "B F1 X%03d Y%03d C%03u",
+                                 (int)status->drone_beacon_x_px,
+                                 (int)status->drone_beacon_y_px,
+                                 (unsigned int)status->drone_beacon_conf_permille);
+        }
+        else
+        {
+            hw_display_make_line(g_pending_lines[1], "B F0 X--- Y--- C---");
+        }
+
+        if(has_v != 0U)
+        {
+            hw_display_make_line(g_pending_lines[2], "V F1 X%03d Y%03d C%03u",
+                                 (int)status->drone_v_x_px,
+                                 (int)status->drone_v_y_px,
+                                 (unsigned int)status->drone_v_conf_permille);
+        }
+        else
+        {
+            hw_display_make_line(g_pending_lines[2], "V F0 X--- Y--- C---");
+        }
+
+        if(status->drone_move_valid != 0U)
+        {
+            hw_display_make_line(g_pending_lines[3], "VBX%+4d VBY%+4d Y%+3d",
+                                 (int)status->drone_vb_x_px,
+                                 (int)status->drone_vb_y_px,
+                                 (int)(status->drone_yaw_err_cdeg / 100));
+        }
+        else
+        {
+            hw_display_make_line(g_pending_lines[3], "VBX ---- VBY ---- Y--");
+        }
+
+        if(status->mode == CHASSIS_MODE_MANUAL)
+        {
+            hw_display_make_line(g_pending_lines[4], "JOY X%+4d Y%+4d",
+                                 (int)(status->joy_x_norm * 100.0f),
+                                 (int)(status->joy_y_norm * 100.0f));
+        }
+        else
+        {
+            hw_display_make_line(g_pending_lines[4], "S %-5s T%04u D%u",
+                                 hw_display_follow_name(status->drone_follow_state),
+                                 (unsigned int)status->drone_follow_remaining_ms,
+                                 (unsigned int)status->drone_hold_dir_valid);
+        }
+
+        hw_display_compose_graph(status);
+        g_text_scan_line = 0U;
+        g_graph_send_row = 0U;
+        g_axis_label_phase = 0U;
+        g_refresh_active = 1U;
+    }
+
+    if (g_refresh_active == 0U)
     {
         return;
     }
-    g_display_tick = 0U;
 
-    memset(lines, 0, sizeof(lines));
-
-    if(status->remote_fresh != 0U)
+    while (g_text_scan_line < DISPLAY_USED_LINE_COUNT)
     {
-        remote_state = 'Y';
-    }
-    else if(status->remote_valid_frame_count != 0U)
-    {
-        remote_state = 'S';
-    }
-    else if(status->remote_rx_byte_count != 0U)
-    {
-        remote_state = 'B';
-    }
-    else
-    {
-        remote_state = 'N';
-    }
-
-    hw_display_make_line(lines[0], "%s R:%c D:%u e%+4.1f",
-                         hw_display_mode_name(status->mode),
-                         remote_state,
-                         (unsigned int)status->drone_move_valid,
-                         status->yaw_error_deg);
-
-    if(has_b != 0U)
-    {
-        hw_display_make_line(lines[1], "B F1 X%03d Y%03d C%03u",
-                             (int)status->drone_beacon_x_px,
-                             (int)status->drone_beacon_y_px,
-                             (unsigned int)status->drone_beacon_conf_permille);
-    }
-    else
-    {
-        hw_display_make_line(lines[1], "B F0 X--- Y--- C---");
-    }
-
-    if(has_v != 0U)
-    {
-        hw_display_make_line(lines[2], "V F1 X%03d Y%03d C%03u",
-                             (int)status->drone_v_x_px,
-                             (int)status->drone_v_y_px,
-                             (unsigned int)status->drone_v_conf_permille);
-    }
-    else
-    {
-        hw_display_make_line(lines[2], "V F0 X--- Y--- C---");
-    }
-
-    if(status->drone_move_valid != 0U)
-    {
-        hw_display_make_line(lines[3], "VBX%+4d VBY%+4d Y%+3d",
-                             (int)status->drone_vb_x_px,
-                             (int)status->drone_vb_y_px,
-                             (int)(status->drone_yaw_err_cdeg / 100));
-    }
-    else
-    {
-        hw_display_make_line(lines[3], "VBX ---- VBY ---- Y--");
-    }
-
-    if(status->mode == CHASSIS_MODE_MANUAL)
-    {
-        hw_display_make_line(lines[4], "JOY X%+4d Y%+4d",
-                             (int)(status->joy_x_norm * 100.0f),
-                             (int)(status->joy_y_norm * 100.0f));
-    }
-    else
-    {
-        hw_display_make_line(lines[4], "S %-5s T%04u D%u",
-                             hw_display_follow_name(status->drone_follow_state),
-                             (unsigned int)status->drone_follow_remaining_ms,
-                             (unsigned int)status->drone_hold_dir_valid);
-    }
-
-    for (i = 0U; i < DISPLAY_USED_LINE_COUNT; ++i)
-    {
-        if (strcmp(lines[i], g_last_lines[i]) != 0)
+        i = g_text_scan_line++;
+        if (strcmp(g_pending_lines[i], g_last_lines[i]) != 0)
         {
-            hw_display_draw_line_text(i, hw_display_line_color(i), lines[i]);
-            strcpy(g_last_lines[i], lines[i]);
+            hw_display_draw_line_text(i, hw_display_line_color(i), g_pending_lines[i]);
+            strcpy(g_last_lines[i], g_pending_lines[i]);
+            return;
         }
     }
 
-    hw_display_draw_graph(status);
+    if (g_graph_send_row < DISPLAY_GRAPH_H)
+    {
+        hw_display_send_graph_chunk();
+        return;
+    }
+
+    if (g_axis_label_phase < 2U)
+    {
+        hw_display_draw_axis_label(g_axis_label_phase++);
+        return;
+    }
+
+    g_refresh_active = 0U;
 }

@@ -216,7 +216,11 @@ void app_car_step(void)
         hw_indicator_off();
     }
 
-    hw_display_update(status);
+}
+
+void app_car_service_display(void)
+{
+    hw_display_update(chassis_control_get_status());
 }
 
 const app_car_status_t *app_car_get_status(void)

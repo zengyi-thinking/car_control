@@ -101,23 +101,23 @@ void proto_drone_init(void)
     g_speed_counter = 0U;
 }
 
-void proto_drone_send_speed(int16 vx_body_mmps, int16 vy_body_mmps)
+void proto_drone_send_speed(int16 forward_y_mmps, int16 right_x_mmps)
 {
     uint8 frame[DRONE_SPEED_SIZE] = {0U};
     uint8 i;
 
     /* 限幅对齐飞控侧 ±2400 校验, 越界帧会被整帧丢弃。 */
-    if(vx_body_mmps > DRONE_SPEED_MAX_MMPS) { vx_body_mmps = DRONE_SPEED_MAX_MMPS; }
-    if(vx_body_mmps < -DRONE_SPEED_MAX_MMPS) { vx_body_mmps = -DRONE_SPEED_MAX_MMPS; }
-    if(vy_body_mmps > DRONE_SPEED_MAX_MMPS) { vy_body_mmps = DRONE_SPEED_MAX_MMPS; }
-    if(vy_body_mmps < -DRONE_SPEED_MAX_MMPS) { vy_body_mmps = -DRONE_SPEED_MAX_MMPS; }
+    if(forward_y_mmps > DRONE_SPEED_MAX_MMPS) { forward_y_mmps = DRONE_SPEED_MAX_MMPS; }
+    if(forward_y_mmps < -DRONE_SPEED_MAX_MMPS) { forward_y_mmps = -DRONE_SPEED_MAX_MMPS; }
+    if(right_x_mmps > DRONE_SPEED_MAX_MMPS) { right_x_mmps = DRONE_SPEED_MAX_MMPS; }
+    if(right_x_mmps < -DRONE_SPEED_MAX_MMPS) { right_x_mmps = -DRONE_SPEED_MAX_MMPS; }
 
     g_speed_counter++;
     frame[0] = DRONE_SPEED_HEAD;
-    frame[1] = (uint8)(((uint16)vx_body_mmps >> 8) & 0xFFU);
-    frame[2] = (uint8)((uint16)vx_body_mmps & 0xFFU);
-    frame[3] = (uint8)(((uint16)vy_body_mmps >> 8) & 0xFFU);
-    frame[4] = (uint8)((uint16)vy_body_mmps & 0xFFU);
+    frame[1] = (uint8)(((uint16)forward_y_mmps >> 8) & 0xFFU);
+    frame[2] = (uint8)((uint16)forward_y_mmps & 0xFFU);
+    frame[3] = (uint8)(((uint16)right_x_mmps >> 8) & 0xFFU);
+    frame[4] = (uint8)((uint16)right_x_mmps & 0xFFU);
     frame[5] = 0U;
     frame[6] = g_speed_counter;
     for(i = 0U; i < 7U; i++)

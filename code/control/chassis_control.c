@@ -98,6 +98,15 @@ static const float s_wheel_ff_ks_duty[4] =
     300.0f,   /* RB */
 };
 
+/* 唯一的视觉到车体坐标语义：+X 向右，+Y 向前。
+ * 麦轮接口历史上把第一个平移参数命名为 vx，但它的物理含义是前向；
+ * 因此视觉链内部始终使用 right_x / forward_y，直到最终麦轮适配点。 */
+typedef struct
+{
+    float right_x;
+    float forward_y;
+} chassis_body_vector_t;
+
 typedef struct
 {
     proto_remote_data_t remote;
@@ -729,15 +738,15 @@ static int16 chassis_drone_float_to_i16(float value)
     return (int16)value;
 }
 
-static void chassis_drone_compensate_yaw_error(float raw_x_px,
-                                               float raw_y_px,
-                                               int16 yaw_err_cdeg,
-                                               uint8 flags,
-                                               float *out_x_px,
-                                               float *out_y_px)
+static chassis_body_vector_t chassis_drone_camera_to_body_vector(float raw_right_x_px,
+                                                                  float raw_forward_y_px,
+                                                                  int16 yaw_err_cdeg,
+                                                                  uint8 flags)
 {
-    float x_px = raw_x_px;
-    float y_px = raw_y_px;
+    chassis_body_vector_t result;
+
+    result.right_x = raw_right_x_px;
+    result.forward_y = raw_forward_y_px;
 
 #if HW_DRONE_YAW_COMP_ENABLE != 0U
     if((flags & PROTO_DRONE_FLAG_HAS_YAW_ERR) != 0U)
@@ -747,22 +756,17 @@ static void chassis_drone_compensate_yaw_error(float raw_x_px,
                             CHASSIS_DEG_TO_RAD;
         const float cos_theta = cosf(theta);
         const float sin_theta = sinf(theta);
-        x_px = (cos_theta * raw_x_px) - (sin_theta * raw_y_px);
-        y_px = (sin_theta * raw_x_px) + (cos_theta * raw_y_px);
+        result.right_x = (cos_theta * raw_right_x_px)
+                       - (sin_theta * raw_forward_y_px);
+        result.forward_y = (sin_theta * raw_right_x_px)
+                         + (cos_theta * raw_forward_y_px);
     }
 #else
     (void)yaw_err_cdeg;
     (void)flags;
 #endif
 
-    if(out_x_px != 0)
-    {
-        *out_x_px = x_px;
-    }
-    if(out_y_px != 0)
-    {
-        *out_y_px = y_px;
-    }
+    return result;
 }
 
 static void chassis_drone_filter_error(float raw_x_px, float raw_y_px, float *out_x_px, float *out_y_px)
@@ -922,33 +926,40 @@ static float chassis_drone_speed_from_distance(float dist_px)
            ((HW_DRONE_TRACK_SPEED_MPS - HW_DRONE_TRACK_MIN_SPEED_MPS) * t);
 }
 
-static void chassis_drone_vector_to_command(float dir_x,
-                                             float dir_y,
+static void chassis_drone_vector_to_command(float dir_right_x,
+                                             float dir_forward_y,
                                              float speed_mps,
-                                             float *vx_body_cmd,
-                                             float *vy_body_cmd)
+                                             float *cmd_forward_y_mps,
+                                             float *cmd_right_x_mps)
 {
-    float v_x;
-    float v_y;
+    float right_x_mps;
+    float forward_y_mps;
     float norm_ell;
 
     speed_mps = chassis_clamp(speed_mps, 0.0f, HW_DRONE_TRACK_SPEED_MPS);
-    v_x = dir_x * speed_mps * HW_DRONE_TRACK_RIGHT_SCALE;
-    v_y = dir_y * speed_mps * HW_DRONE_TRACK_FWD_SCALE;
-    v_x = chassis_clamp(v_x, -HW_DRONE_MAX_RIGHT_MPS, HW_DRONE_MAX_RIGHT_MPS);
-    v_y = chassis_clamp(v_y, -HW_DRONE_MAX_FWD_MPS, HW_DRONE_MAX_FWD_MPS);
+    right_x_mps = dir_right_x * speed_mps * HW_DRONE_TRACK_RIGHT_SCALE;
+    forward_y_mps = dir_forward_y * speed_mps * HW_DRONE_TRACK_FWD_SCALE;
+    right_x_mps = chassis_clamp(right_x_mps,
+                                -HW_DRONE_MAX_RIGHT_MPS,
+                                HW_DRONE_MAX_RIGHT_MPS);
+    forward_y_mps = chassis_clamp(forward_y_mps,
+                                  -HW_DRONE_MAX_FWD_MPS,
+                                  HW_DRONE_MAX_FWD_MPS);
 
-    norm_ell = (v_x / HW_DRONE_MAX_RIGHT_MPS) * (v_x / HW_DRONE_MAX_RIGHT_MPS)
-             + (v_y / HW_DRONE_MAX_FWD_MPS) * (v_y / HW_DRONE_MAX_FWD_MPS);
+    norm_ell = (right_x_mps / HW_DRONE_MAX_RIGHT_MPS)
+             * (right_x_mps / HW_DRONE_MAX_RIGHT_MPS)
+             + (forward_y_mps / HW_DRONE_MAX_FWD_MPS)
+             * (forward_y_mps / HW_DRONE_MAX_FWD_MPS);
     if(norm_ell > 1.0f)
     {
         const float scale = 1.0f / sqrtf(norm_ell);
-        v_x *= scale;
-        v_y *= scale;
+        right_x_mps *= scale;
+        forward_y_mps *= scale;
     }
 
-    *vx_body_cmd = HW_DRONE_FWD_SIGN * v_y;
-    *vy_body_cmd = HW_DRONE_RIGHT_SIGN * v_x;
+    /* mecanum_inverse 的第一个平移参数是前向(+Y)，第二个是右向(+X)。 */
+    *cmd_forward_y_mps = HW_DRONE_FWD_SIGN * forward_y_mps;
+    *cmd_right_x_mps = HW_DRONE_RIGHT_SIGN * right_x_mps;
 }
 
 static void chassis_drone_edge_track_command(float err_x_px,
@@ -1671,8 +1682,7 @@ void chassis_control_set_remote(const proto_remote_data_t *remote,
 
 void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uint16 age_ms)
 {
-    float vb_x_px;
-    float vb_y_px;
+    chassis_body_vector_t vb_body;
 
     if (drone != 0)
     {
@@ -1691,14 +1701,14 @@ void chassis_control_set_drone(const proto_drone_data_t *drone, uint8 fresh, uin
     g_status.drone_v_y_px = g_runtime.drone.v_y_px;
     g_status.drone_beacon_x_px = g_runtime.drone.beacon_x_px;
     g_status.drone_beacon_y_px = g_runtime.drone.beacon_y_px;
-    chassis_drone_compensate_yaw_error((float)g_runtime.drone.vb_x_px,
-                                       (float)g_runtime.drone.vb_y_px,
-                                       g_runtime.drone.yaw_err_cdeg,
-                                       g_runtime.drone.flags,
-                                       &vb_x_px,
-                                       &vb_y_px);
-    g_status.drone_vb_x_px = (g_status.drone_move_valid != 0U) ? chassis_drone_float_to_i16(vb_x_px) : 0;
-    g_status.drone_vb_y_px = (g_status.drone_move_valid != 0U) ? chassis_drone_float_to_i16(vb_y_px) : 0;
+    vb_body = chassis_drone_camera_to_body_vector((float)g_runtime.drone.vb_x_px,
+                                                   (float)g_runtime.drone.vb_y_px,
+                                                   g_runtime.drone.yaw_err_cdeg,
+                                                   g_runtime.drone.flags);
+    g_status.drone_vb_x_px = (g_status.drone_move_valid != 0U)
+                           ? chassis_drone_float_to_i16(vb_body.right_x) : 0;
+    g_status.drone_vb_y_px = (g_status.drone_move_valid != 0U)
+                           ? chassis_drone_float_to_i16(vb_body.forward_y) : 0;
     g_status.drone_yaw_err_cdeg = g_runtime.drone.yaw_err_cdeg;
     g_status.drone_v_conf_permille = g_runtime.drone.v_conf_permille;
     g_status.drone_beacon_conf_permille = g_runtime.drone.beacon_conf_permille;
@@ -2036,18 +2046,16 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
         {
             if (g_status.drone_move_valid != 0U)
             {
-                float vb_x_px;
-                float vb_y_px;
+                chassis_body_vector_t vb_body;
                 float vb_raw_dist_px;
                 float vb_dist_px;
 
-                chassis_drone_compensate_yaw_error((float)g_runtime.drone.vb_x_px,
-                                                   (float)g_runtime.drone.vb_y_px,
-                                                   g_runtime.drone.yaw_err_cdeg,
-                                                   g_runtime.drone.flags,
-                                                   &vb_x_px,
-                                                   &vb_y_px);
-                vb_raw_dist_px = chassis_drone_error_distance(vb_x_px, vb_y_px);
+                vb_body = chassis_drone_camera_to_body_vector((float)g_runtime.drone.vb_x_px,
+                                                               (float)g_runtime.drone.vb_y_px,
+                                                               g_runtime.drone.yaw_err_cdeg,
+                                                               g_runtime.drone.flags);
+                vb_raw_dist_px = chassis_drone_error_distance(vb_body.right_x,
+                                                               vb_body.forward_y);
                 if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE) ||
                    (((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS) ||
                      (g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE)) &&
@@ -2056,14 +2064,15 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                     /* 新边缘信标第一帧直接成为滤波起点，方向变化交给速度斜坡处理。 */
                     g_runtime.drone_error_filter_valid = 0U;
                 }
-                chassis_drone_filter_error(vb_x_px,
-                                           vb_y_px,
-                                           &vb_x_px,
-                                           &vb_y_px);
-                vb_dist_px = chassis_drone_error_distance(vb_x_px, vb_y_px);
+                chassis_drone_filter_error(vb_body.right_x,
+                                           vb_body.forward_y,
+                                           &vb_body.right_x,
+                                           &vb_body.forward_y);
+                vb_dist_px = chassis_drone_error_distance(vb_body.right_x,
+                                                           vb_body.forward_y);
 
-                chassis_drone_track_compute_command(vb_x_px,
-                                                     vb_y_px,
+                chassis_drone_track_compute_command(vb_body.right_x,
+                                                     vb_body.forward_y,
                                                      vb_dist_px,
                                                      &vx_body_cmd,
                                                      &vy_body_cmd);

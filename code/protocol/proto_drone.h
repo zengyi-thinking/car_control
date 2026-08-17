@@ -41,6 +41,6 @@ uint8 proto_drone_update(proto_drone_data_t *out);
 #define DRONE_SPEED_TAIL                 0x5AU
 #define DRONE_SPEED_SIZE                 9U
 #define DRONE_SPEED_MAX_MMPS             2400
-void proto_drone_send_speed(int16 vx_body_mmps, int16 vy_body_mmps);
+void proto_drone_send_speed(int16 forward_y_mmps, int16 right_x_mmps);
 
 #endif

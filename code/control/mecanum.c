@@ -8,36 +8,36 @@
  * 3 = 右后 (RB)
  *
  * 坐标约定:
- * vx > 0: 前进, 对应小车 +Y
- * vy > 0: 右移, 对应小车 +X
+ * forward_y > 0: 前进, 对应小车 +Y
+ * right_x > 0: 右移, 对应小车 +X
  * omega > 0: 逆时针
  ******************************************************************************/
 
 #include "control/mecanum.h"
 #include "math.h"
 
-void mecanum_inverse(float vx, float vy, float omega, float wheel[4])
+void mecanum_inverse(float forward_y, float right_x, float omega, float wheel[4])
 {
     float k = MECANUM_GEOMETRY_K_M;
 
-    wheel[0] = vx - vy - omega * k;
-    wheel[1] = vx + vy + omega * k;
-    wheel[2] = vx + vy - omega * k;
-    wheel[3] = vx - vy + omega * k;
+    wheel[0] = forward_y - right_x - omega * k;
+    wheel[1] = forward_y + right_x + omega * k;
+    wheel[2] = forward_y + right_x - omega * k;
+    wheel[3] = forward_y - right_x + omega * k;
 }
 
-void mecanum_forward(const float wheel[4], float *vx, float *vy, float *omega)
+void mecanum_forward(const float wheel[4], float *forward_y, float *right_x, float *omega)
 {
     float k = MECANUM_GEOMETRY_K_M;
 
-    if (vx)
+    if (forward_y)
     {
-        *vx = 0.25f * (wheel[0] + wheel[1] + wheel[2] + wheel[3]);
+        *forward_y = 0.25f * (wheel[0] + wheel[1] + wheel[2] + wheel[3]);
     }
 
-    if (vy)
+    if (right_x)
     {
-        *vy = 0.25f * (-wheel[0] + wheel[1] + wheel[2] - wheel[3]);
+        *right_x = 0.25f * (-wheel[0] + wheel[1] + wheel[2] - wheel[3]);
     }
 
     if (omega)
@@ -85,7 +85,7 @@ void mecanum_desaturate(float wheel[4], float max_abs_speed)
     }
 }
 
-void mecanum_solve(float vx, float vy, float omega, float wheel[4])
+void mecanum_solve(float forward_y, float right_x, float omega, float wheel[4])
 {
-    mecanum_inverse(vx, vy, omega, wheel);
+    mecanum_inverse(forward_y, right_x, omega, wheel);
 }

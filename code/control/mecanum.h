@@ -9,8 +9,8 @@
 
 /*
  * Unified chassis/body convention:
- * - vx > 0 : vehicle moves forward
- * - vy > 0 : vehicle moves right
+ * - forward_y > 0 : vehicle moves toward physical +Y (forward)
+ * - right_x > 0   : vehicle moves toward physical +X (right)
  * - omega > 0 : vehicle rotates counter-clockwise
  *
  * Unified wheel order:
@@ -27,9 +27,9 @@
  *   CCW:     - + - +
  */
 
-void mecanum_inverse(float vx, float vy, float omega, float wheel[4]);
-void mecanum_forward(const float wheel[4], float *vx, float *vy, float *omega);
+void mecanum_inverse(float forward_y, float right_x, float omega, float wheel[4]);
+void mecanum_forward(const float wheel[4], float *forward_y, float *right_x, float *omega);
 void mecanum_desaturate(float wheel[4], float max_abs_speed);
-void mecanum_solve(float vx, float vy, float omega, float wheel[4]);
+void mecanum_solve(float forward_y, float right_x, float omega, float wheel[4]);
 
 #endif

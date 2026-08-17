@@ -58,12 +58,12 @@ typedef struct
 
     float vel_x_field_mps;
     float vel_y_field_mps;
-    float vel_vx_body_mps;
-    float vel_vy_body_mps;
+    float vel_vx_body_mps;  /* 历史字段名：前向速度，小车 +Y。 */
+    float vel_vy_body_mps;  /* 历史字段名：右向速度，小车 +X。 */
     float cmd_vx_field_mps;
     float cmd_vy_field_mps;
-    float cmd_vx_body_mps;
-    float cmd_vy_body_mps;
+    float cmd_vx_body_mps;  /* 历史字段名：前向命令，小车 +Y。 */
+    float cmd_vy_body_mps;  /* 历史字段名：右向命令，小车 +X。 */
     float cmd_omega_radps;
     float yaw_error_deg;
     float gyro_z_bias_radps;
@@ -113,8 +113,8 @@ typedef struct
     int16 drone_v_y_px;
     int16 drone_beacon_x_px;
     int16 drone_beacon_y_px;
-    int16 drone_vb_x_px;
-    int16 drone_vb_y_px;
+    int16 drone_vb_x_px;  /* Yaw补偿后：正值表示信标在小车右方(+X)。 */
+    int16 drone_vb_y_px;  /* Yaw补偿后：正值表示信标在小车前方(+Y)。 */
     int16 drone_yaw_err_cdeg;
     uint16 drone_v_conf_permille;
     uint16 drone_beacon_conf_permille;

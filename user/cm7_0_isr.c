@@ -3,6 +3,9 @@
 #include "protocol/proto_drone.h"
 #include "protocol/proto_remote.h"
 
+volatile uint8 g_car_control_tick_pending = 0U;
+volatile uint16 g_car_control_tick_overrun_count = 0U;
+
 static void app_uart_service(uart_index_enum uart_index)
 {
     uint8 byte;
@@ -25,7 +28,18 @@ static void app_uart_service(uart_index_enum uart_index)
     }
 }
 
-void pit0_ch0_isr(void)  { pit_isr_flag_clear(PIT_CH0); }
+void pit0_ch0_isr(void)
+{
+    pit_isr_flag_clear(PIT_CH0);
+    if (g_car_control_tick_pending != 0U)
+    {
+        if (g_car_control_tick_overrun_count < 0xFFFFU)
+        {
+            g_car_control_tick_overrun_count++;
+        }
+    }
+    g_car_control_tick_pending = 1U;
+}
 void pit0_ch1_isr(void)  { pit_isr_flag_clear(PIT_CH1); }
 void pit0_ch2_isr(void)  { pit_isr_flag_clear(PIT_CH2); }
 void pit0_ch10_isr(void) { pit_isr_flag_clear(PIT_CH10); }
