@@ -10,6 +10,8 @@
 
 #define HW_REMOTE_TIMEOUT_MS                  150U
 #define HW_DRONE_TIMEOUT_MS                   280U
+/* 视觉短时丢帧租约。租约内保持上一可靠方向，随后才平滑停车。 */
+#define HW_DRONE_TRACK_LOST_GRACE_MS          1000U
 
 #define HW_ENCODER_DISPLAY_DEADBAND           3
 
@@ -31,30 +33,31 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-/* 自动追灯: 外圈全速快追、近圈降速、中心持续压灯。 */
+/* 自动追灯: 外圈平滑接近、近圈降速、中心低速压灯。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.40f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.65f
-#define HW_DRONE_TRACK_SPEED_MPS              1.30f
-#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.60f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.35f
+#define HW_DRONE_TRACK_SPEED_MPS              1.10f
+#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.45f
 #define HW_DRONE_TRACK_NEAR_PX                35.0f
 #define HW_DRONE_TRACK_FWD_SCALE              0.80f
 #define HW_DRONE_TRACK_RIGHT_SCALE            0.90f
 /* 自动追灯使用独立矢量加速度上限, 提高起步响应; 连线拉拽保护
  * 仍由全局 HW_MAX_LINEAR_ACCEL_MPS2 兜底。 */
-#define HW_DRONE_TRACK_ACCEL_MPS2             1.8f
+#define HW_DRONE_TRACK_ACCEL_MPS2             1.0f
 #define HW_DRONE_NEAR_ENTER_PX                8.0f
 #define HW_DRONE_NEAR_EXIT_PX                 12.0f
-#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.50f
+#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.35f
+#define HW_DRONE_NEAR_PRESS_ACCEL_MPS2        0.60f
 #define HW_DRONE_NEAR_PRESS_DIR_ALPHA         0.40f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_PX        2.5f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_DOT       0.15f
 #define HW_DRONE_NEAR_PRESS_LOST_MS           250U
 #define HW_DRONE_NEAR_PRESS_MAX_MS            1200U
 /* 边缘信标丢失后的续航总时长，末段衰减包含在总时长内。 */
-#define HW_DRONE_LOST_HOLD_MS                 4000U
-#define HW_DRONE_LOST_HOLD_SPEED_SCALE        0.60f
-#define HW_DRONE_LOST_HOLD_FADE_MS            350U
+#define HW_DRONE_LOST_HOLD_MS                 HW_DRONE_TRACK_LOST_GRACE_MS
+#define HW_DRONE_LOST_HOLD_SPEED_SCALE        1.00f
+#define HW_DRONE_LOST_HOLD_FADE_MS            300U
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
 #define HW_DRONE_FWD_SIGN                     (1.0f)

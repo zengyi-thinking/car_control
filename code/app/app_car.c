@@ -21,16 +21,11 @@ typedef struct
     uint16 remote_age_ms;
     uint16 drone_age_ms;
     chassis_mode_t mode;
-    /* 阶段1 微调: DRONE_TRACK 进入/退出迟滞计数器, 抗信标抖动.
-     * 5ms 控制周期下, 默认 3 帧退出迟滞 = 15ms 抗抖动窗口. */
-    uint8 drone_track_enter_pending;
-    uint8 drone_track_exit_pending;
+    /* 当前追踪模式的视觉无效累计时间。短时无效不切走模式，
+     * 让 chassis_control 的上一可靠方向保持逻辑连续工作。 */
+    uint16 drone_invalid_ms;
     uint8 mission_stop_latched;
 } app_car_runtime_t;
-
-/* 阶段1: DRONE_TRACK 退出迟滞. 连续 N 帧信标无效才真正退出, 抗信标抖动/短暂丢失.
- * 进入保持 1 帧有效即可, 保证起步响应. */
-#define APP_DRONE_TRACK_EXIT_HOLD_FRAMES     3U
 
 static app_car_runtime_t g_app_runtime;
 
@@ -50,70 +45,52 @@ static uint8 app_drone_move_valid(void)
            ((g_app_runtime.drone.flags & PROTO_DRONE_FLAG_MOVE_VALID) != 0U);
 }
 
-static uint8 app_drone_follow_valid(void)
-{
-    return chassis_control_drone_follow_ready();
-}
-
 static void app_update_mode(void)
 {
     const uint8 remote_fresh = app_remote_fresh();
     const uint8 drone_move_valid = app_drone_move_valid();
-    const uint8 drone_follow_valid = app_drone_follow_valid();
-    const uint8 drone_track_valid = ((drone_move_valid != 0U) || (drone_follow_valid != 0U)) ? 1U : 0U;
 
     if(g_app_runtime.mission_stop_latched != 0U)
     {
         g_app_runtime.mode = CHASSIS_MODE_SAFE_STOP;
-        g_app_runtime.drone_track_enter_pending = 0U;
-        g_app_runtime.drone_track_exit_pending = 0U;
+        g_app_runtime.drone_invalid_ms = 0U;
         return;
     }
 
-    /* DRONE_TRACK 进入/退出迟滞:
-     * 进入: 1 帧有效即可 (反应要快, 否则起步慢)
-     * 退出: 连续 N 帧无效才真正退出 (抗信标抖动/短暂丢失).
-     * 信标真实长时间丢失仍会快速响应, 只是不再被单帧抖动打断. */
-    if (drone_track_valid != 0U)
+    if (drone_move_valid != 0U)
     {
-        if (g_app_runtime.mode == CHASSIS_MODE_DRONE_TRACK)
-        {
-            /* 已经在 DRONE_TRACK, 保持并清零计数器 */
-            g_app_runtime.drone_track_enter_pending = 0U;
-            g_app_runtime.drone_track_exit_pending = 0U;
-        }
-        else
-        {
-            /* 从其他模式进 DRONE_TRACK: 1 帧有效即可 */
-            g_app_runtime.drone_track_enter_pending = 1U;
-            g_app_runtime.drone_track_exit_pending = 0U;
-            g_app_runtime.mode = CHASSIS_MODE_DRONE_TRACK;
-        }
+        /* 新鲜有效帧重新获得租约，立即恢复追踪且不清空底层方向缓存。 */
+        g_app_runtime.drone_invalid_ms = 0U;
+        g_app_runtime.mode = CHASSIS_MODE_DRONE_TRACK;
+        return;
     }
-    else
+
+    if (g_app_runtime.mode == CHASSIS_MODE_DRONE_TRACK)
     {
-        if (g_app_runtime.mode == CHASSIS_MODE_DRONE_TRACK)
+        /* A4仍在线但本帧没有可用B1时，先让底层沿上一可靠方向运行。
+         * 若链路本身已经超时，则不再延长租约。 */
+        if ((g_app_runtime.has_drone != 0U) &&
+            (g_app_runtime.drone_age_ms <= HW_DRONE_TIMEOUT_MS) &&
+            (g_app_runtime.drone_invalid_ms < HW_DRONE_TRACK_LOST_GRACE_MS))
         {
-            /* 当前在 DRONE_TRACK 但本帧无效: 累加退出计数 */
-            g_app_runtime.drone_track_exit_pending++;
-            g_app_runtime.drone_track_enter_pending = 0U;
-            if (g_app_runtime.drone_track_exit_pending >= APP_DRONE_TRACK_EXIT_HOLD_FRAMES)
+            if (g_app_runtime.drone_invalid_ms <=
+                (uint16)(HW_DRONE_TRACK_LOST_GRACE_MS - HW_CONTROL_PERIOD_MS))
             {
-                /* 连续 N 帧无效后，下一优先级才允许遥控接管。 */
-                g_app_runtime.mode = (remote_fresh != 0U) ? CHASSIS_MODE_MANUAL : CHASSIS_MODE_HEADING_HOLD;
-                g_app_runtime.drone_track_exit_pending = 0U;
+                g_app_runtime.drone_invalid_ms = (uint16)(g_app_runtime.drone_invalid_ms +
+                                                          HW_CONTROL_PERIOD_MS);
+                return;
             }
-            /* 否则保持 DRONE_TRACK: 让续航状态机有时间响应,
-             * 避免信标抖动 1~2 帧就触发模式切换 */
         }
-        else
-        {
-            /* 最初遥控语义：收到新鲜A3帧即进入MANUAL，无需额外摇杆门限。 */
-            g_app_runtime.mode = (remote_fresh != 0U) ? CHASSIS_MODE_MANUAL : CHASSIS_MODE_HEADING_HOLD;
-            g_app_runtime.drone_track_enter_pending = 0U;
-            g_app_runtime.drone_track_exit_pending = 0U;
-        }
+
+        /* 租约耗尽后才允许退出自动追踪，避免每次短丢帧都重置滤波器。 */
+        g_app_runtime.drone_invalid_ms = 0U;
+        g_app_runtime.mode = (remote_fresh != 0U) ? CHASSIS_MODE_MANUAL : CHASSIS_MODE_HEADING_HOLD;
+        return;
     }
+
+    g_app_runtime.drone_invalid_ms = 0U;
+    /* 未曾建立自动追踪时，保持原有遥控/航向保持优先级。 */
+    g_app_runtime.mode = (remote_fresh != 0U) ? CHASSIS_MODE_MANUAL : CHASSIS_MODE_HEADING_HOLD;
 }
 
 void app_car_init(void)

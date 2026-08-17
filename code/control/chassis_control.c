@@ -905,6 +905,16 @@ static void chassis_drone_publish_follow_status(void)
     g_status.drone_hold_dir_valid = g_runtime.drone_hold_dir_valid;
 }
 
+static float chassis_drone_slew_accel_limit(void)
+{
+    if(g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS)
+    {
+        return HW_DRONE_NEAR_PRESS_ACCEL_MPS2;
+    }
+
+    return HW_DRONE_TRACK_ACCEL_MPS2;
+}
+
 static float chassis_drone_speed_from_distance(float dist_px)
 {
     float t;
@@ -2079,7 +2089,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                 chassis_apply_body_command_slew_limit(&vx_body_cmd,
                                                       &vy_body_cmd,
                                                       dt_s,
-                                                      HW_DRONE_TRACK_ACCEL_MPS2);
+                                                      chassis_drone_slew_accel_limit());
 
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;
@@ -2093,7 +2103,7 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                     chassis_apply_body_command_slew_limit(&vx_body_cmd,
                                                           &vy_body_cmd,
                                                           dt_s,
-                                                          HW_DRONE_TRACK_ACCEL_MPS2);
+                                                          chassis_drone_slew_accel_limit());
 
                     omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                     command_active = 1U;

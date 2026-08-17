@@ -47,4 +47,16 @@
 
 - `SAFE_STOP` no longer runs yaw-hold correction. It preserves the heading target internally but commands zero translation, zero rotation and disables all four wheel outputs.
 - Explicit manual override and wheel tuning keep their existing higher priority; releasing either returns the latched mission stop to a hard zero-output state.
+
+## 2026-08-17 Short Vision-Loss Lease For Continuous Tracking
+
+- In `DRONE_TRACK`, a missing `MOVE_VALID` frame no longer immediately selects manual or heading hold. The application keeps a `1000ms` tracking lease so the chassis can consume its last reliable V-to-B direction without resetting the mode or direction filter during a longer visual dropout.
+- During that lease, the chassis keeps the previous translation command for about `700ms`, then fades it to zero over `300ms`. A4 format, coordinate signs, wheel PID, and near-press logic are unchanged. The independent A4 link timeout remains `280ms`; a missing link is not treated as a visual dropout.
+- The lease is deliberately bounded; after it expires, the car returns to manual control when a fresh A3 exists, otherwise to heading hold. This prevents the previous multi-second blind continuation from hiding a real link or visual failure.
+
+## 2026-08-17 Smooth Automatic Approach And Press
+
+- Reduce the automatic far target speed from `1.30m/s` to `1.10m/s`, the near minimum from `0.60m/s` to `0.45m/s`, and the V-to-B direction filter new-sample weight from `0.65` to `0.35`.
+- Limit ordinary tracking velocity-vector acceleration to `1.0m/s2`. Keep this shaping above the existing wheel-speed PID so wheel calibration and yaw hold remain unchanged.
+- Give `NEAR_PRESS` its own `0.60m/s2` velocity-vector acceleration limit and reduce press speed from `0.50m/s` to `0.35m/s`. The press timer, direction lock, B1/B2 arbitration, and A4 protocol remain unchanged.
 - 2026-08-12：运行时运动来源收口为无人机A4和LoRa遥控A3。安全停车优先，其次是有效A4追踪及有界续航，再其次是新鲜A3遥控；左摇杆同时控制前后和左右，右摇杆与旧位移提交链路不再参与运动仲裁。普通待机使用 `HEADING_HOLD` 回到上电锁定方向。
