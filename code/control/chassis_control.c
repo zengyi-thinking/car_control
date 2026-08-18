@@ -1311,6 +1311,58 @@ static void chassis_apply_body_command_slew_limit(float *vx_body_cmd,
     *vy_body_cmd = g_runtime.cmd_vy_body_state;
 }
 
+/* 前后/左右分轴加速度限幅(椭圆限幅): 前向轴用更紧的上限, 抑制起步
+ * 与换向时的前后猛冲; 横向保持原上限。速度矢量方向仍连续旋转,
+ * 换灯换向时沿椭圆边界平滑过渡而不是硬跳。 */
+static void chassis_apply_body_command_slew_limit_axes(float *vx_body_cmd,
+                                                       float *vy_body_cmd,
+                                                       float dt_s,
+                                                       float fwd_accel_mps2,
+                                                       float lat_accel_mps2)
+{
+    const float lat_step = lat_accel_mps2 * dt_s;
+    const float fwd_step = fwd_accel_mps2 * dt_s;
+    float cur_vx;
+    float cur_vy;
+    float dv_x;
+    float dv_y;
+    float norm_scaled;
+
+    if ((vx_body_cmd == 0) || (vy_body_cmd == 0) || (dt_s <= 0.0f)
+        || (lat_step <= 0.0f) || (fwd_step <= 0.0f))
+    {
+        return;
+    }
+
+    if ((!isfinite(*vx_body_cmd)) || (!isfinite(*vy_body_cmd)))
+    {
+        *vx_body_cmd = 0.0f;
+        *vy_body_cmd = 0.0f;
+    }
+
+    cur_vx = g_runtime.cmd_vx_body_state;
+    cur_vy = g_runtime.cmd_vy_body_state;
+    if ((!isfinite(cur_vx)) || (!isfinite(cur_vy)))
+    {
+        cur_vx = 0.0f;
+        cur_vy = 0.0f;
+    }
+    dv_x = *vx_body_cmd - cur_vx;
+    dv_y = *vy_body_cmd - cur_vy;
+    norm_scaled = sqrtf(((dv_x * dv_x) / (lat_step * lat_step))
+                        + ((dv_y * dv_y) / (fwd_step * fwd_step)));
+    if ((isfinite(norm_scaled)) && (norm_scaled > 1.0f))
+    {
+        const float scale = 1.0f / norm_scaled;
+        dv_x *= scale;
+        dv_y *= scale;
+    }
+    g_runtime.cmd_vx_body_state = cur_vx + dv_x;
+    g_runtime.cmd_vy_body_state = cur_vy + dv_y;
+    *vx_body_cmd = g_runtime.cmd_vx_body_state;
+    *vy_body_cmd = g_runtime.cmd_vy_body_state;
+}
+
 static void chassis_apply_body_command_slew(float *vx_body_cmd, float *vy_body_cmd, float dt_s)
 {
     chassis_apply_body_command_slew_limit(vx_body_cmd, vy_body_cmd, dt_s, HW_MAX_LINEAR_ACCEL_MPS2);
@@ -2086,10 +2138,11 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                                                      vb_dist_px,
                                                      &vx_body_cmd,
                                                      &vy_body_cmd);
-                chassis_apply_body_command_slew_limit(&vx_body_cmd,
-                                                      &vy_body_cmd,
-                                                      dt_s,
-                                                      chassis_drone_slew_accel_limit());
+                chassis_apply_body_command_slew_limit_axes(&vx_body_cmd,
+                                                           &vy_body_cmd,
+                                                           dt_s,
+                                                           HW_DRONE_TRACK_FWD_ACCEL_MPS2,
+                                                           chassis_drone_slew_accel_limit());
 
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;
@@ -2100,10 +2153,11 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
             {
                 if (chassis_drone_lost_command(&vx_body_cmd, &vy_body_cmd) != 0U)
                 {
-                    chassis_apply_body_command_slew_limit(&vx_body_cmd,
-                                                          &vy_body_cmd,
-                                                          dt_s,
-                                                          chassis_drone_slew_accel_limit());
+                    chassis_apply_body_command_slew_limit_axes(&vx_body_cmd,
+                                                               &vy_body_cmd,
+                                                               dt_s,
+                                                               HW_DRONE_TRACK_FWD_ACCEL_MPS2,
+                                                               chassis_drone_slew_accel_limit());
 
                     omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                     command_active = 1U;

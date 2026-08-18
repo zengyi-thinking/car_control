@@ -33,18 +33,26 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-/* 自动追灯: 外圈平滑接近、近圈降速、中心低速压灯。 */
+/* 自动追灯: 外圈平滑接近、近圈降速、中心低速压灯。
+ * 前向缩放与加速度按"无人机-小车对"的系统能力定: 无人机追踪起步
+ * 阶段必然滞后, 前向速度与加速度过大时滞后会累积越过连线拉紧
+ * (约1米)和 V 灯出视场(约1.2米)阈值, 触发拖拽-失控螺旋。
+ * 前向有效速度 = 1.1 × 0.60 = 0.66m/s, 加速度 0.8m/s², 均在
+ * 无人机 6 度姿态权威的平稳跟踪范围内。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.40f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
 #define HW_DRONE_TRACK_FILTER_ALPHA           0.35f
 #define HW_DRONE_TRACK_SPEED_MPS              1.10f
 #define HW_DRONE_TRACK_MIN_SPEED_MPS          0.45f
 #define HW_DRONE_TRACK_NEAR_PX                35.0f
-#define HW_DRONE_TRACK_FWD_SCALE              0.80f
+#define HW_DRONE_TRACK_FWD_SCALE              0.60f
 #define HW_DRONE_TRACK_RIGHT_SCALE            0.90f
-/* 自动追灯使用独立矢量加速度上限, 提高起步响应; 连线拉拽保护
- * 仍由全局 HW_MAX_LINEAR_ACCEL_MPS2 兜底。 */
-#define HW_DRONE_TRACK_ACCEL_MPS2             1.0f
+/* 自动追灯矢量加速度上限: 与前向速度配套限制起步猛度。 */
+#define HW_DRONE_TRACK_ACCEL_MPS2             0.8f
+/* 前后方向独立加速度上限(椭圆限幅的前向轴): 前向是主驱动方向,
+ * 起步/换向的猛冲集中在此, 用更紧的上限让前后运动更平顺;
+ * 横向保持 HW_DRONE_TRACK_ACCEL_MPS2。 */
+#define HW_DRONE_TRACK_FWD_ACCEL_MPS2         0.6f
 #define HW_DRONE_NEAR_ENTER_PX                8.0f
 #define HW_DRONE_NEAR_EXIT_PX                 12.0f
 #define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.35f
