@@ -152,6 +152,9 @@ typedef struct
     uint8 drone_hold_dir_valid;
     float drone_hold_dir_x;
     float drone_hold_dir_y;
+    uint8 drone_hold_cmd_valid;
+    float drone_hold_cmd_forward_mps;
+    float drone_hold_cmd_right_mps;
     float drone_press_origin_dir_x;
     float drone_press_origin_dir_y;
     chassis_beacon_follow_state_t drone_follow_state;
@@ -276,6 +279,9 @@ static void chassis_reset_command_states(void)
     g_runtime.drone_hold_dir_valid = 0U;
     g_runtime.drone_hold_dir_x = 0.0f;
     g_runtime.drone_hold_dir_y = 1.0f;
+    g_runtime.drone_hold_cmd_valid = 0U;
+    g_runtime.drone_hold_cmd_forward_mps = 0.0f;
+    g_runtime.drone_hold_cmd_right_mps = 0.0f;
     g_runtime.drone_press_origin_dir_x = 0.0f;
     g_runtime.drone_press_origin_dir_y = 1.0f;
     g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE;
@@ -803,6 +809,9 @@ static void chassis_drone_reset_follow(void)
     g_runtime.drone_hold_dir_valid = 0U;
     g_runtime.drone_hold_dir_x = 0.0f;
     g_runtime.drone_hold_dir_y = 1.0f;
+    g_runtime.drone_hold_cmd_valid = 0U;
+    g_runtime.drone_hold_cmd_forward_mps = 0.0f;
+    g_runtime.drone_hold_cmd_right_mps = 0.0f;
     g_runtime.drone_press_origin_dir_x = 0.0f;
     g_runtime.drone_press_origin_dir_y = 1.0f;
     g_runtime.drone_follow_state = CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE;
@@ -824,6 +833,20 @@ static void chassis_drone_store_hold_dir(float dir_x, float dir_y)
     g_runtime.drone_hold_dir_x = dir_x / norm;
     g_runtime.drone_hold_dir_y = dir_y / norm;
     g_runtime.drone_hold_dir_valid = 1U;
+}
+
+static void chassis_drone_store_hold_command(float forward_mps, float right_mps)
+{
+    if((!isfinite(forward_mps)) || (!isfinite(right_mps)))
+    {
+        return;
+    }
+
+    /* 保存外层加速度成形后的真实指令。视觉短时丢失时继续使用该速度，
+     * 禁止重新按远区满速生成目标，否则近灯漏检会导致小车反而加速。 */
+    g_runtime.drone_hold_cmd_forward_mps = forward_mps;
+    g_runtime.drone_hold_cmd_right_mps = right_mps;
+    g_runtime.drone_hold_cmd_valid = 1U;
 }
 
 static void chassis_drone_update_near_press_dir(float err_x_px,
@@ -1172,6 +1195,7 @@ static uint8 chassis_drone_lost_command(float *vx_body_cmd, float *vy_body_cmd)
 
     if((g_runtime.drone_follow_state != CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE) ||
        (g_runtime.drone_hold_dir_valid == 0U) ||
+       (g_runtime.drone_hold_cmd_valid == 0U) ||
        (g_runtime.drone_edge_remaining_ms == 0U))
     {
         chassis_drone_enter_wait_next_edge();
@@ -1186,11 +1210,8 @@ static uint8 chassis_drone_lost_command(float *vx_body_cmd, float *vy_body_cmd)
         speed_scale *= chassis_clamp(fade_progress, 0.0f, 1.0f);
     }
 
-    chassis_drone_vector_to_command(g_runtime.drone_hold_dir_x,
-                                     g_runtime.drone_hold_dir_y,
-                                     HW_DRONE_TRACK_SPEED_MPS * speed_scale,
-                                     vx_body_cmd,
-                                     vy_body_cmd);
+    *vx_body_cmd = g_runtime.drone_hold_cmd_forward_mps * speed_scale;
+    *vy_body_cmd = g_runtime.drone_hold_cmd_right_mps * speed_scale;
     chassis_drone_tick_timer(&g_runtime.drone_edge_remaining_ms);
     if(g_runtime.drone_edge_remaining_ms == 0U)
     {
@@ -2118,12 +2139,12 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                                                                g_runtime.drone.flags);
                 vb_raw_dist_px = chassis_drone_error_distance(vb_body.right_x,
                                                                vb_body.forward_y);
-                if((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_CONTINUE) ||
-                   (((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS) ||
+                if(((g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_NEAR_PRESS) ||
                      (g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_WAIT_NEXT_EDGE)) &&
-                    (vb_raw_dist_px >= HW_DRONE_NEAR_EXIT_PX)))
+                    (vb_raw_dist_px >= HW_DRONE_NEAR_EXIT_PX))
                 {
-                    /* 新边缘信标第一帧直接成为滤波起点，方向变化交给速度斜坡处理。 */
+                    /* 压灯完成后的新灯重新建立滤波起点。普通短时漏检恢复时
+                     * 保留旧滤波状态，让方向从当前运动方向连续过渡。 */
                     g_runtime.drone_error_filter_valid = 0U;
                 }
                 chassis_drone_filter_error(vb_body.right_x,
@@ -2143,6 +2164,10 @@ void chassis_control_step(const int16 enc_counts[4], float dt_s, const flight_at
                                                            dt_s,
                                                            HW_DRONE_TRACK_FWD_ACCEL_MPS2,
                                                            chassis_drone_slew_accel_limit());
+                if(g_runtime.drone_follow_state == CHASSIS_BEACON_FOLLOW_EDGE_TRACK)
+                {
+                    chassis_drone_store_hold_command(vx_body_cmd, vy_body_cmd);
+                }
 
                 omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, transl_speed_mps, dt_s);
                 command_active = 1U;

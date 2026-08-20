@@ -1,5 +1,11 @@
 # Car Control Decisions
 
+## 2026-08-20 Restore One Step Of Competition Response Without Full Aggression
+
+- Keep the existing 1000 ms visual-loss lease, saved slew-limited command, direction interpolation, wheel PID, yaw hold and A4 format.
+- Raise automatic far/minimum/press speed to 1.20/0.52/0.45 m/s, forward/right scale to 0.65/1.00, forward/right acceleration to 1.0/1.2 m/s2 and press acceleration to 0.80 m/s2.
+- Do not restore the old 2.0 m/s2 acceleration in this round. The moderate values shorten visible startup delay while retaining margin for the drone to follow. Dual-core IAR build passes; physical validation is pending.
+
 ## 2026-08-12 Restore Direct Remote Control And Drone Priority
 
 - Restore the original remote-mode entry rule: any fresh, checksum-valid A3 frame selects direct manual control when no higher-priority drone action is active. Remove the later raw-axis override threshold.
