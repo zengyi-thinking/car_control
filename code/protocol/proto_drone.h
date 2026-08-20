@@ -34,9 +34,10 @@ void proto_drone_init(void);
 void proto_drone_on_byte(uint8 byte);
 uint8 proto_drone_update(proto_drone_data_t *out);
 
-/* 车体实测速度上行帧 (对齐飞控 hw_car_link 的 C5 解析器):
+/* 车体追踪参考速度上行帧 (对齐飞控 hw_car_link 的 C5 解析器):
  * 头 0xC5 + 前向速度 i16 大端 + 右向速度 i16 大端 + flags + 帧号
- * + 前7字节异或 + 尾 0x5A。收到新 A4 帧时立即回传, 与 20ms 节拍同步。 */
+ * + 前7字节异或 + 尾 0x5A。常态为编码器实测速度，正向加速可带有限
+ * 命令预馈；收到新 A4 帧时立即回传, 与 20ms 节拍同步。 */
 #define DRONE_SPEED_HEAD                 0xC5U
 #define DRONE_SPEED_TAIL                 0x5AU
 #define DRONE_SPEED_SIZE                 9U

@@ -9,6 +9,7 @@
 #include "protocol/proto_drone.h"
 #include "protocol/proto_remote.h"
 
+#include <math.h>
 #include <string.h>
 
 typedef struct
@@ -28,6 +29,41 @@ typedef struct
 } app_car_runtime_t;
 
 static app_car_runtime_t g_app_runtime;
+
+static float app_car_c5_forward_reference(const chassis_status_t *status)
+{
+    float measured_mps;
+    float command_mps;
+    float lead_weight;
+
+    if(status == 0)
+    {
+        return 0.0f;
+    }
+    measured_mps = isfinite(status->vel_vx_body_mps)
+                 ? status->vel_vx_body_mps : 0.0f;
+    command_mps = isfinite(status->cmd_vx_body_mps)
+                ? status->cmd_vx_body_mps : measured_mps;
+
+    /* Only lead positive-forward acceleration in automatic tracking.  During
+     * braking, reversal, manual control and all lateral motion C5 stays on the
+     * measured odometry value, so this cannot create an early stop or change
+     * the already verified direction semantics. */
+    if((status->mode == CHASSIS_MODE_DRONE_TRACK)
+       && (command_mps > 0.0f)
+       && (command_mps > measured_mps))
+    {
+        lead_weight = HW_DRONE_C5_FORWARD_ACCEL_LEAD_WEIGHT;
+        if(lead_weight < 0.0f) { lead_weight = 0.0f; }
+        if(lead_weight > 1.0f) { lead_weight = 1.0f; }
+        measured_mps += lead_weight * (command_mps - measured_mps);
+        if(measured_mps > command_mps)
+        {
+            measured_mps = command_mps;
+        }
+    }
+    return measured_mps;
+}
 
 static uint8 app_remote_fresh(void)
 {
@@ -166,11 +202,12 @@ void app_car_step(void)
 
     status = chassis_control_get_status();
 
-    /* 收到新 A4 帧即回传车体实测速度(编码器里程计), 与无人机 20ms
-     * 节拍天然同步, 作为追踪前馈的真实车速来源。 */
+    /* 收到新A4帧即回传以编码器里程计为主的车速参考。仅在自动前向
+     * 加速时混入一部分已成形命令，给无人机留下提前建立前倾的时间；
+     * 减速、反向和横向仍使用实测速度。C5帧格式与二十毫秒节拍不变。 */
     if((drone_frame_new != 0U) && (status != 0))
     {
-        proto_drone_send_speed((int16)(status->vel_vx_body_mps * 1000.0f),
+        proto_drone_send_speed((int16)(app_car_c5_forward_reference(status) * 1000.0f),
                                (int16)(status->vel_vy_body_mps * 1000.0f));
     }
 

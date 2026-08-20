@@ -1,5 +1,18 @@
 # Car Control Decisions
 
+## 2026-08-20 Lower Automatic Motion While Preserving Continuity
+
+- Lower far, near and press speed to 1.10, 0.48 and 0.40 m/s. With a forward scale of 0.52, pure forward or reverse motion is limited to about 0.57 m/s.
+- Lower forward-axis acceleration to 0.55 m/s2 and press acceleration to 0.65 m/s2. Keep lateral scale/acceleration, direction filtering, the one-second visual lease, yaw hold and wheel PID unchanged.
+- Raise the positive-forward C5 command blend to 0.70 so the paired aircraft sees acceleration early despite the gentler chassis ramp. C5 stays odometry-led and remains measured during braking, reverse, lateral and manual motion.
+- This is an uncommitted paired-flight parameter set. Physical validation is pending.
+
+## 2026-08-20 Reserve Forward Chase Margin For The Drone
+
+- Keep the current continuous-motion lease, direction filter, near-press behavior, yaw hold, wheel PID and A4/C5 protocols unchanged.
+- Reduce only the automatic forward scale from 0.65 to 0.58 and the forward slew limit from 1.0 to 0.70 m/s2. With the 1.20 m/s base speed, the effective forward cap is about 0.70 m/s. Lateral and press parameters do not change.
+- This paired limit gives the drone time to establish feed-forward tilt before tether load and visual error accumulate. Both cores build without errors or warnings; vehicle validation is pending and the change remains uncommitted.
+
 ## 2026-08-20 Restore One Step Of Competition Response Without Full Aggression
 
 - Keep the existing 1000 ms visual-loss lease, saved slew-limited command, direction interpolation, wheel PID, yaw hold and A4 format.
@@ -66,3 +79,9 @@
 - Limit ordinary tracking velocity-vector acceleration to `1.0m/s2`. Keep this shaping above the existing wheel-speed PID so wheel calibration and yaw hold remain unchanged.
 - Give `NEAR_PRESS` its own `0.60m/s2` velocity-vector acceleration limit and reduce press speed from `0.50m/s` to `0.35m/s`. The press timer, direction lock, B1/B2 arbitration, and A4 protocol remain unchanged.
 - 2026-08-12：运行时运动来源收口为无人机A4和LoRa遥控A3。安全停车优先，其次是有效A4追踪及有界续航，再其次是新鲜A3遥控；左摇杆同时控制前后和左右，右摇杆与旧位移提交链路不再参与运动仲裁。普通待机使用 `HEADING_HOLD` 回到上电锁定方向。
+## 2026-08-20 Lead C5 Only During Positive Forward Acceleration
+
+- Preserve the nine-byte C5 protocol and keep measured odometry as the normal reference.
+- In automatic tracking only, when the slew-shaped positive-forward command is above measured speed, report measured speed plus 55 percent of that gap. Do not prefeed braking, reverse, lateral or manual motion.
+- This is an upstream tracking aid for the aircraft, not a change to chassis velocity, acceleration, wheel PID, beacon continuation or press behavior.
+- Both cores build without errors or warnings. Vehicle and tethered-flight validation are pending, so the change remains uncommitted.

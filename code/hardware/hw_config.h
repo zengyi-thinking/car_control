@@ -33,23 +33,27 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-/* 自动追灯快速连续档。速度和加速度只恢复到旧完赛参数与当前保守档
- * 之间，先缩短起步迟滞，同时保留无人机追踪余量。 */
+/* 自动追灯保持连续运动，整体速度小幅下降，并重点降低前后轴动态。
+ * 前后有效上限约为零点五七米每秒，加速度约为零点五五米每二次方秒。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.40f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
 #define HW_DRONE_TRACK_FILTER_ALPHA           0.35f
-#define HW_DRONE_TRACK_SPEED_MPS              1.20f
-#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.52f
+#define HW_DRONE_TRACK_SPEED_MPS              1.10f
+#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.48f
 #define HW_DRONE_TRACK_NEAR_PX                35.0f
-#define HW_DRONE_TRACK_FWD_SCALE              0.65f
+#define HW_DRONE_TRACK_FWD_SCALE              0.52f
 #define HW_DRONE_TRACK_RIGHT_SCALE            1.00f
 #define HW_DRONE_TRACK_ACCEL_MPS2             1.2f
-/* 前后方向仍比横向温和，避免小车突然前冲把无人机拖出视场。 */
-#define HW_DRONE_TRACK_FWD_ACCEL_MPS2         1.0f
+/* 前后方向比横向温和，避免小车突然前冲把无人机拖出视场。 */
+#define HW_DRONE_TRACK_FWD_ACCEL_MPS2         0.55f
+/* C5 remains a nine-byte speed frame.  During positive forward acceleration,
+ * blend part of the already slew-shaped command into the measured speed so
+ * the aircraft can establish forward tilt before wheel speed fully catches up. */
+#define HW_DRONE_C5_FORWARD_ACCEL_LEAD_WEIGHT  0.70f
 #define HW_DRONE_NEAR_ENTER_PX                8.0f
 #define HW_DRONE_NEAR_EXIT_PX                 12.0f
-#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.45f
-#define HW_DRONE_NEAR_PRESS_ACCEL_MPS2        0.80f
+#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.40f
+#define HW_DRONE_NEAR_PRESS_ACCEL_MPS2        0.65f
 #define HW_DRONE_NEAR_PRESS_DIR_ALPHA         0.40f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_PX        2.5f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_DOT       0.15f
