@@ -1,10 +1,23 @@
 # Car Control Decisions
 
-## 2026-08-20 Lower Automatic Motion While Preserving Continuity
+## 2026-08-22 Restore The July 16 Press Speed Without Its Acceleration Step
 
-- Lower far, near and press speed to 1.10, 0.48 and 0.40 m/s. With a forward scale of 0.52, pure forward or reverse motion is limited to about 0.57 m/s.
-- Lower forward-axis acceleration to 0.55 m/s2 and press acceleration to 0.65 m/s2. Keep lateral scale/acceleration, direction filtering, the one-second visual lease, yaw hold and wheel PID unchanged.
-- Raise the positive-forward C5 command blend to 0.70 so the paired aircraft sees acceleration early despite the gentler chassis ramp. C5 stays odometry-led and remains measured during braking, reverse, lateral and manual motion.
+- Restore `HW_DRONE_NEAR_PRESS_SPEED_MPS` to 0.64m/s, matching `car_control@ebcea5c` from July 16.
+- Keep the current independent press acceleration at 0.85m/s2 instead of restoring the July controller's shared 2.0m/s2 acceleration. This recovers press authority without recreating a sharp tether load step.
+- Preserve the current continuous visual lease, direction lock, wheel PID, yaw hold and A4/C5 formats.
+
+## 2026-08-22 Restore Fast Continuous Beacon Response Without Reverting The State Machine
+
+- Keep the current saved, slew-shaped command during short beacon gaps. Do not restore the July monolithic controller or recompute maximum speed from a stale direction.
+- Raise far/minimum speed to 1.20/0.55 m/s, forward/right scale to 0.60/1.05, forward/right acceleration to 0.85/1.40 m/s2, filter alpha to 0.50, and press speed/acceleration to 0.52/0.85 m/s2. The effective pure-forward far cap is about 0.72 m/s.
+- Extend only the fresh-A4 visual lease to 2000ms with a 500ms final fade. A true A4 link loss still stops at 280ms; mission stop remains permanently latched until power-cycle.
+- Preserve wheel PID, yaw hold, coordinate signs, A4/C5 layouts and the positive-forward C5 lead weight already present in the user's worktree. This parameter round builds both car cores without warnings; real vehicle validation is pending.
+
+## 2026-08-20 Lower The Forward Envelope One More Step
+
+- Keep far, near and press speeds at 1.10, 0.48 and 0.40 m/s. Lower only the forward scale from 0.52 to 0.48, limiting pure forward or reverse motion to about 0.53 m/s.
+- Lower forward-axis acceleration from 0.55 to 0.48 m/s2. Keep press and lateral acceleration, direction filtering, the one-second visual lease, yaw hold and wheel PID unchanged.
+- Raise the positive-forward C5 command blend from 0.70 to 0.78 so the paired aircraft sees the gentler acceleration early. C5 stays odometry-led and remains measured during braking, reverse, lateral and manual motion.
 - This is an uncommitted paired-flight parameter set. Physical validation is pending.
 
 ## 2026-08-20 Reserve Forward Chase Margin For The Drone

@@ -11,7 +11,7 @@
 #define HW_REMOTE_TIMEOUT_MS                  150U
 #define HW_DRONE_TIMEOUT_MS                   280U
 /* 视觉短时丢帧租约。租约内保持上一可靠方向，随后才平滑停车。 */
-#define HW_DRONE_TRACK_LOST_GRACE_MS          1000U
+#define HW_DRONE_TRACK_LOST_GRACE_MS          2000U
 
 #define HW_ENCODER_DISPLAY_DEADBAND           3
 
@@ -33,27 +33,27 @@
 #define HW_MANUAL_MAX_LATERAL_SPEED_MPS       1.50f
 #define HW_MANUAL_MAX_YAW_RATE_RADPS          1.20f
 
-/* 自动追灯保持连续运动，整体速度小幅下降，并重点降低前后轴动态。
- * 前后有效上限约为零点五七米每秒，加速度约为零点五五米每二次方秒。 */
+/* 自动追灯使用中等提速档。前后有效远区上限约为零点八一米每秒，
+ * 横向响应同步提高，但仍保留分轴加速度限制。 */
 #define HW_DRONE_MAX_FWD_MPS                  1.40f
 #define HW_DRONE_MAX_RIGHT_MPS                2.00f
-#define HW_DRONE_TRACK_FILTER_ALPHA           0.35f
-#define HW_DRONE_TRACK_SPEED_MPS              1.10f
-#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.48f
+#define HW_DRONE_TRACK_FILTER_ALPHA           0.55f
+#define HW_DRONE_TRACK_SPEED_MPS              1.30f
+#define HW_DRONE_TRACK_MIN_SPEED_MPS          0.60f
 #define HW_DRONE_TRACK_NEAR_PX                35.0f
-#define HW_DRONE_TRACK_FWD_SCALE              0.52f
-#define HW_DRONE_TRACK_RIGHT_SCALE            1.00f
-#define HW_DRONE_TRACK_ACCEL_MPS2             1.2f
-/* 前后方向比横向温和，避免小车突然前冲把无人机拖出视场。 */
-#define HW_DRONE_TRACK_FWD_ACCEL_MPS2         0.55f
+#define HW_DRONE_TRACK_FWD_SCALE              0.62f
+#define HW_DRONE_TRACK_RIGHT_SCALE            1.05f
+#define HW_DRONE_TRACK_ACCEL_MPS2             1.60f
+/* 前后方向仍比横向温和，同时缩短起步响应时间。 */
+#define HW_DRONE_TRACK_FWD_ACCEL_MPS2         1.00f
 /* C5 remains a nine-byte speed frame.  During positive forward acceleration,
  * blend part of the already slew-shaped command into the measured speed so
  * the aircraft can establish forward tilt before wheel speed fully catches up. */
-#define HW_DRONE_C5_FORWARD_ACCEL_LEAD_WEIGHT  0.70f
+#define HW_DRONE_C5_FORWARD_ACCEL_LEAD_WEIGHT  0.78f
 #define HW_DRONE_NEAR_ENTER_PX                8.0f
 #define HW_DRONE_NEAR_EXIT_PX                 12.0f
-#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.40f
-#define HW_DRONE_NEAR_PRESS_ACCEL_MPS2        0.65f
+#define HW_DRONE_NEAR_PRESS_SPEED_MPS         0.64f
+#define HW_DRONE_NEAR_PRESS_ACCEL_MPS2        0.85f
 #define HW_DRONE_NEAR_PRESS_DIR_ALPHA         0.40f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_PX        2.5f
 #define HW_DRONE_NEAR_PRESS_DIR_MIN_DOT       0.15f
@@ -62,7 +62,7 @@
 /* 边缘信标丢失后的续航总时长，末段衰减包含在总时长内。 */
 #define HW_DRONE_LOST_HOLD_MS                 HW_DRONE_TRACK_LOST_GRACE_MS
 #define HW_DRONE_LOST_HOLD_SPEED_SCALE        1.00f
-#define HW_DRONE_LOST_HOLD_FADE_MS            300U
+#define HW_DRONE_LOST_HOLD_FADE_MS            500U
 #define HW_DRONE_V_CENTER_X_PX                94.0f
 #define HW_DRONE_V_CENTER_Y_PX                60.0f
 #define HW_DRONE_FWD_SIGN                     (1.0f)
