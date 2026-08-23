@@ -1,3 +1,7 @@
+# 历史代码审查（非当前事实来源）
+
+本报告生成于2026-06-09，所引用的引脚、符号和行号已经随之后的底盘调整发生变化。保留它仅用于追溯，不应据此修改当前轮序或坐标；当前事实以根目录README、`hw_board_pins.h`和 `hw_config.h` 为准。
+
 ---
 phase: manual-control-convergence-review
 reviewed: 2026-06-09T09:27:50Z

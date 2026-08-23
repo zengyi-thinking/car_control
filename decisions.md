@@ -1,5 +1,11 @@
 # Car Control Decisions
 
+## 2026-08-23 Prepare A Public Main Branch Without Changing Chassis Behavior
+
+- Add a root README and third-party component notice, archive the dated code review, and stop tracking per-user IAR state.
+- Keep the current A4/C5 layouts, +Y forward/+X right body convention, visual-loss lease, press behavior, wheel tuning and hard-latched mission stop unchanged.
+- Do not publish a root project license until the maintainer selects one compatible with the vendored GPL-3.0-or-later SEEKFREE library.
+
 ## 2026-08-22 Restore The July 16 Press Speed Without Its Acceleration Step
 
 - Restore `HW_DRONE_NEAR_PRESS_SPEED_MPS` to 0.64m/s, matching `car_control@ebcea5c` from July 16.

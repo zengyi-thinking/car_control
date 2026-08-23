@@ -1,63 +1,61 @@
-# 航向锁定（Yaw Hold）全程生效设计
+# 小车航向锁定设计
 
-## 1. 背景
+本文描述当前 `car_control` 的实际Yaw保持行为。旧版“SAFE_STOP也主动回正”的设计已经废弃；任务停车必须保持四轮硬零。
 
-无人机遥控小车要求小车移动方向准确，前提是小车航向（yaw）在全程保持稳定：
-上电后无论运动中、还是被手动转动，都要自动回正到锁定角度。
+## 上电锁定
 
-旧逻辑只在 MANUAL / DRONE_TRACK 两个模式调用 `chassis_yaw_hold`，
-SAFE_STOP（无遥控、无无人机）模式下完全不修正航向，电机被 `hw_motor_drv8701e_stop_all` 关停。
-导致手持抬起轮子转动小车时不回正。
+小车上电后使用IMU建立航向参考：
 
-## 2. 决策
+- 稳定观察窗口：1秒。
+- 窗口内最大航向变化：3度。
+- 窗口结束时的当前Yaw作为锁定方向。
+- 同一窗口平均陀螺Z轴零偏。
 
-航向锁定的调用与模式解耦：**只要 `yaw_lock_valid` 有效，所有模式（含 SAFE_STOP）都做纯旋转修正**，
-平移指令在 SAFE_STOP 下强制为 0（不允许无指令自由漂移）。
+若观察期间变化超过门限，窗口重新开始。锁定之前不应直接执行高速移动。
 
-## 3. 实现（全部在 chassis_control.c）
+## 控制器
 
-### 3.1 放宽上电启动锁
-- `CHASSIS_STARTUP_LOCK_TIME_S`：`2.0f` → `1.0f`
-- `CHASSIS_STARTUP_YAW_STABLE_DEG`：`4.0f` → `8.0f`
-- `chassis_startup_lock_step` 内硬编码的 `>= 2.0f` 改为 `>= CHASSIS_STARTUP_LOCK_TIME_S`
-- 效果：上电约 1 秒即锁定当前 yaw，容忍窗口内 ±8° 抖动；gyro bias 仍在该 1s 窗口内做平均。
+当前参数位于 `code/control/chassis_control.c`：
 
-### 3.2 SAFE_STOP 分支增加纯航向保持
-在 `case CHASSIS_MODE_SAFE_STOP`（约 line 1469）末尾：
 ```c
-if (g_runtime.yaw_lock_valid)
-{
-    vx_body_cmd = 0.0f;
-    vy_body_cmd = 0.0f;
-    omega_cmd = chassis_yaw_hold(yaw_deg, gyro_z_radps, dt_s);
-    command_active = 1U;
-    g_status.target_yaw_deg = g_runtime.yaw_lock_deg;
-    g_status.heading_valid = 1U;
-}
+CHASSIS_HEADING_KP = 3.5
+CHASSIS_HEADING_KI = 0.18
+CHASSIS_HEADING_KD = 0.38
+CHASSIS_HEADING_I_LIMIT = 0.60
 ```
 
-### 3.3 enabled 判定允许 SAFE_STOP 航向修正
-`g_status.enabled`（约 line 1562）增加条件：
-```c
-((g_status.mode == CHASSIS_MODE_SAFE_STOP) &&
- g_runtime.yaw_lock_valid &&
- command_active)
+控制器使用连续Yaw维护内部参考，误差则按最短圆周距离折返到正负180度，避免跨界跳变。
+
+当前还包含：
+
+- 条件积分和积分限幅。
+- 陀螺Z轴阻尼。
+- 静止小误差死区。
+- 运动中慢速零偏迁移，给积分保留抗瞬态余量。
+- 角速度限幅和麦轮解算后的平移优先限幅。
+
+## 模式行为
+
+| 模式 | 平移 | 航向行为 |
+|---|---|---|
+| `MANUAL` | 左摇杆命令 | 保持上电航向 |
+| `DRONE_TRACK` | A4 V→B方向 | 保持上电航向 |
+| `HEADING_HOLD` | 强制为0 | 主动回到上电航向 |
+| `SAFE_STOP` | 强制为0 | 不输出Yaw修正，四轮硬零 |
+| `WHEEL_TUNE` | 单轮调试 | 不进入普通航向保持 |
+
+`SAFE_STOP`不主动回正是安全约束。收到 `MISSION_STOP` 后，任何航向偏差都不能重新给电机通电。
+
+## 验证
+
+1. 架空四轮并静止上电，约1秒后确认锁定完成。
+2. `HEADING_HOLD`中缓慢转动车体，释放后应回到原航向。
+3. `MANUAL`和 `DRONE_TRACK`直线运动时，车体不应持续偏航。
+4. 发送 `MISSION_STOP`，随后手动转动车体；四轮必须继续保持零输出。
+5. 从正负180度附近跨界，Yaw误差不得跳成接近360度。
+
+构建命令：
+
+```bat
+iar\build_all_cores.bat --no-pause
 ```
-使 app_car.c 的 `status->enabled` 判定为真，走 `hw_motor_drv8701e_set_all` 而非 stop_all。
-
-## 4. 安全保护（已存在，未改动）
-
-- `chassis_yaw_hold` 死区：误差 <0.4° 且 |gyro|<0.010rad/s 时返回 0，电机不动，无微震。
-- `omega_cmd` 限幅 ±`HW_MAX_YAW_RATE_RADPS`（2.4 rad/s）。
-- `mecanum_desaturate` + `HW_MANUAL_MAX_DUTY` 限幅，不过载。
-- WHEEL_TUNE 模式优先级最高（app_car.c，`g_chassis_wheel_pid_tune_enabled` 仲裁在最前），与 SAFE_STOP 物理互斥，调参流程不受影响。
-
-## 5. 不变的部分
-
-- MANUAL / DRONE_TRACK / WHEEL_TUNE / POSITION_MOVE 各分支逻辑不变。
-- 航向环 Kp/Ki/Kd（2.4/0.03/0.28）不变。
-- 协议、遥测字段、跨核共享内存不变。
-
-## 6. 验证
-
-`iar/build_only.bat` 双核构建：CM7_0 / CM7_1 均 0 errors / 0 warnings。

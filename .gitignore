@@ -24,6 +24,10 @@ build.ninja
 **/*.driver.xcl
 **/*.general.xcl
 **/*.wsdt
+**/*.ewt
+**/*.ewx
+**/*.sim
+**/settings/IAR Embedded Workbench/
 
 # Temporary files
 *.bak
@@ -32,3 +36,5 @@ build.ninja
 .DS_Store
 Thumbs.db
 references/
+.zcode/
+tmp/
