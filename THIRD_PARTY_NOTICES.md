@@ -7,4 +7,4 @@
 - CMSIS：`libraries/sdk/common/hdr/cmsis/`，见其中 `LICENSE.txt`。
 - RTOS组件：`libraries/sdk/common/src/rtos/`，见其中 `license.txt`。
 
-本仓库当前尚未声明自研代码的根许可证。正式公开前必须添加与上述依赖兼容的根 `LICENSE`，并保留所有第三方版权与许可证文本。
+本仓库自研代码以 GNU General Public License v3.0 or later 发布，完整条款见根目录 [`LICENSE`](LICENSE)。第三方组件继续适用其原始许可证；根许可证不会替代、删除或缩减这些声明。

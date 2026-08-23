@@ -111,6 +111,6 @@ iar\download_all_cores.bat --no-pause
 4. 短时失去信标时运动应连续，链路真正超时后必须停车。
 5. `MISSION_STOP`置位后发送普通A4和满量遥控，小车仍必须保持四轮硬零。
 
-## 许可证状态
+## 许可证
 
-`libraries/` 中的逐飞CYT4BB开源库声明采用GPL-3.0-or-later，SDK中还包含各自许可证。公开发布前必须保留第三方声明并选择兼容的项目根许可证。详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+本项目自研代码以 GNU General Public License v3.0 or later 发布，完整条款见 [`LICENSE`](LICENSE)。`libraries/` 中的第三方组件继续适用其各自的版权和许可证声明，详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
