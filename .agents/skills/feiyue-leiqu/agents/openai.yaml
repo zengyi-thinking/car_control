@@ -1,0 +1,4 @@
+interface:
+  display_name: "飞跃雷区 Skill"
+  short_description: "飞控、小车、副摄与通讯的协同开发和持续优化规范"
+  default_prompt: "使用 $feiyue-leiqu 接手并完成这个飞控、小车、视觉或通讯任务，区分代码验证与物理验证。"
